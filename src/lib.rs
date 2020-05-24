@@ -9,9 +9,8 @@ use strum_macros::EnumMessage;
 use strum_macros::EnumString;
 use strum_macros::AsRefStr;
 
-use log::{info,warn,error};
+use log::{trace,info, warn, error};
 use text_io::read;
-
 
 
 use std::str::FromStr;
@@ -21,6 +20,7 @@ use tokio::sync::mpsc::Receiver;
 
 use network::Client;
 use network::Message;
+
 pub mod network;
 
 
@@ -62,7 +62,7 @@ impl Commands {
 
 fn new_chat() {
     println!("Enter the hostname: ");
-    let hostname:String =read!("{}\n");
+    let hostname: String = read!("{}\n");
 }
 
 fn settings() {
@@ -70,27 +70,23 @@ fn settings() {
     println!("Quitting settings");
 }
 
-fn check_messages(clients:&mut Vec<Client>){
-    for  client in clients{
-        let mut msg =client.incoming_receiver.try_recv();
+pub fn get_messages(clients: &mut Vec<Client>) -> Vec<Message> {
+    let mut messages = Vec::new();
+    for client in clients {
+        let mut msg = client.incoming_receiver.try_recv();
         while msg.is_ok() {
-            println!("New message from: {}\n{}",client.addr,msg.unwrap().data);
-            msg=client.incoming_receiver.try_recv();
+            messages.push(msg.unwrap());
+            msg = client.incoming_receiver.try_recv();
         }
     }
-
+    messages
 }
 
 pub fn input_loop(mut incoming_receiver: Receiver<Client>) {
-    let mut clients:Vec<Client>=Vec::new();
-    info!("Started input loop");
+    let mut clients: Vec<Client> = Vec::new();
     loop {
-        match incoming_receiver.try_recv(){
-            Ok(C) => {
-                info!("Added new client");
-                clients.push(C)},
-            Err(E) => {},
-        }
+        info!("Started input loop");
+        update_clients(&mut incoming_receiver, &mut clients);
         check_messages(&mut clients);
         match Commands::get_user_command() {
             Commands::NewChat => {
@@ -107,3 +103,22 @@ pub fn input_loop(mut incoming_receiver: Receiver<Client>) {
         }
     }
 }
+
+
+pub fn check_messages(clients: &mut Vec<Client>) {
+    info!("Updating messages");
+    for msg in get_messages(clients) {
+        println!("New message from: {}\n{}", msg.from, msg.data);
+    }
+}
+
+pub fn update_clients(incoming_receiver: &mut Receiver<Client>, clients: &mut Vec<Client>) {
+    match incoming_receiver.try_recv() {
+        Ok(C) => {
+            info!("Added new client");
+            clients.push(C)
+        }
+        Err(E) => { error!("Failed to add client\n{}", E) }
+    }
+}
+
