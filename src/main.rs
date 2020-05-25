@@ -17,12 +17,13 @@ use std::error::Error;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 use tokio::prelude::*;
+
 //use tokio::io::util::async_read_ext::AsyncReadExt;
-#[tokio::main]
+
 async fn test() {
-    let messages = vec!("Hello", "How are you?");
+    let messages = vec!("Hello\n", "How are you?\n");
     let addr = String::from("127.0.0.1:5962");
-    info!("Attempting connection...");
+    info!("Attempting connection to {}",addr);
     let mut client = match Client::open_connection(addr.clone()).await {
         Ok(T) => T,
         Err(E) => {
@@ -30,7 +31,9 @@ async fn test() {
             return;
         }
     };
-    info!("Connected to server, sending messagess");
+    info!("Connected to server");
+    std::thread::sleep(time::Duration::from_secs(5));
+    info!("Starting message sending");
     for msg in messages {
         let sub_message = Message::from_me(String::from(msg), addr.clone());
         trace!("Sending message {} to writer", sub_message);
@@ -49,60 +52,7 @@ async fn test() {
 }
 
 #[tokio::main]
-async fn test_stupid() {
-    let (mut outgoing_sender, mut outgoing_receiver) = channel(10);
-    outgoing_sender.send("A").await;
-    outgoing_sender.send("B").await;
-    tokio::spawn(async move {});
-    tokio::spawn(async move {
-        println!("{}", outgoing_receiver.recv().await.unwrap());
-        println!("{}", outgoing_receiver.recv().await.unwrap());
-    });
-}
-
-
-#[tokio::main]
-async fn simple_reader() ->Result<(),Box<dyn std::error::Error>>{
-    println!("What da fujhc");
-    tokio::spawn(async move {
-        println!("What da fujhc X2");
-        info!("Listening");
-        let mut listener = TcpListener::bind("127.0.0.1:5962").await;
-        let mut asda=listener.unwrap();
-        loop {
-            info!("Waiting for connection...");
-
-            info!("Connecterd to clioen");
-
-            let (mut socket, addr) = asda.accept().await.unwrap();
-            info!("Connecterd to clioeashjfsdhjfvbsdjhfvgbdshjfbsdhjdfbsdn");
-            let (mut reader, mut writer) = socket.into_split();
-            let mut buffer = [0; 1024];
-            let n = reader.read(&mut buffer).await.unwrap();
-            let data = (&buffer[0..n]).to_vec();
-            let str = String::from_utf8(data).unwrap();
-            println!("Read {} bytes", n);
-            println!("Msg was: {}", str);
-        }
-    });
-
-    Ok(())
-}
-#[tokio::main]
-async fn simple_writer(){
-    println!("Sup");
-    let msg="Hello";
-    let mut stream = TcpStream::connect("127.0.0.1:5962").await;
-    info!("Connneted");
-    let (reader,mut writer) = stream.unwrap().into_split();
-    writer.write_all(msg.as_bytes()).await;
-    info!("Wrote all data");
-}
-
-pub fn main() {
-
-
-
+pub async fn main() {
     let mut config = ConfigBuilder::new();
     config.set_location_level(LevelFilter::Error);
     config.set_thread_level(LevelFilter::Error);
@@ -114,26 +64,20 @@ pub fn main() {
         ]
     ).unwrap();
 
-    simple_reader();
-    println!("Starting writing");
-    simple_writer();
-    println!("Finsihyed writing");
-    /*
     info!("Initiating Setup!");
-    let (new_client_sender, new_client_receiver) = channel(100);
-    thread::spawn(|| {
-        secure_chat_lib::network::listening_server(new_client_sender);
-
+    let (new_client_sender, new_client_receiver) = tokio::sync::mpsc::channel(10);
+    tokio::spawn(async move {
+        secure_chat_lib::network::listening_server(new_client_sender).await;
     });
-    thread::spawn(|| {
+    tokio::spawn(async move {
         info!("Starting user thread..");
-
         secure_chat_lib::input_loop(new_client_receiver);
     });
+    loop{
 
+    }
+
+/*    std::thread::sleep(time::Duration::from_secs(5));
     info!("Starting client connection thread");
-    std::thread::sleep(time::Duration::from_secs(2));
-    info!("Waiting...");
-    test();*/
-
+    test().await;*/
 }

@@ -5,8 +5,10 @@ use tokio::sync::mpsc::{Sender, channel, Receiver};
 
 
 use log::{trace, info, warn, error};
-use std::fmt;
+use std::{fmt, time};
 use std::fmt::Formatter;
+use futures::future::err;
+
 
 pub struct Message {
     pub(crate) data: String,
@@ -31,98 +33,121 @@ impl fmt::Display for Message {
 
 pub struct Client {
     pub(crate) addr: String,
-    pub outgoing_sender: Sender<Message>,
-    pub(crate) incoming_receiver: Receiver<Message>,
+    pub outgoing_sender: tokio::sync::mpsc::Sender<Message>,
+    pub(crate) incoming_receiver: tokio::sync::mpsc::Receiver<Message>,
 }
 
 impl Client {
-    fn from_connection(addr: String, outgoing_sender: Sender<Message>, incoming_receiver: Receiver<Message>) -> Client {
+    fn from_connection(addr: String, outgoing_sender: tokio::sync::mpsc::Sender<Message>, incoming_receiver: tokio::sync::mpsc::Receiver<Message>) -> Client {
         Client { addr, outgoing_sender, incoming_receiver }
     }
-    //noinspection RsUnresolvedReference
+
+    ///Opens a socket connection to a given address
     pub async fn open_connection(addr: String) -> Result<Client, Box<dyn std::error::Error>> {
-        info!("Initiating connection to {}", addr);
-        let mut stream = TcpStream::connect(&addr).await?;
+        info!("[Client::open_connection] Initiating connection to {}", addr);
+        let mut stream = tokio::net::TcpStream::connect(&addr).await?;
         let (reader, writer) = stream.into_split();
-        let (outgoing_sender, outgoing_receiver) = channel(10);
-        let (incoming_sender, incoming_receiver) = channel(10);
+        let (outgoing_sender, outgoing_receiver) = tokio::sync::mpsc::channel(10);
+        let (incoming_sender, incoming_receiver) = tokio::sync::mpsc::channel(10);
         let mut client = Client {
             addr: addr.clone(),
             outgoing_sender,
             incoming_receiver,
         };
-        trace!("Starting input/output threads for connection");
-        Client::client_input_thread(addr.clone(), reader, incoming_sender).await;
-        Client::client_output_thread(addr.clone(), writer, outgoing_receiver);
-        info!("Successfully initiated connected to {}", addr);
+        trace!("[Client::open_connection] Starting input/output threads for connection");
+        let addr_input = addr.clone();
+        let addr_output = addr.clone();
+        tokio::spawn(async move {
+            dbg!("Test if this starts - input");
+            Client::client_input_thread(addr_input, reader, incoming_sender).await;
+        });
+        println!("What the fuck");
+        tokio::spawn(async move {
+            dbg!("Test if this starts - output");
+            Client::client_output_thread(addr_output, writer, outgoing_receiver).await;
+        });
+        info!("[Client::open_connection] Successfully initiated connected to {}", addr);
+        //std::thread::sleep(time::Duration::from_secs(5));
         Ok(client)
     }
-    async fn client_input_thread(addr: String, mut reader: tokio::net::tcp::OwnedReadHalf, mut incoming_sender: Sender<Message>) {
-        trace!("Starting input reader for {}", addr);
-        tokio::spawn(async move {
-            //TODO NEED TO INCREASE BUFFER SIZE
-            warn!("Need to increase buffer size for receiving client data!");
-            let mut buf = [0; 1024];
-            loop {
-                let n = match reader.read(&mut buf).await {
-                    // socket closed
-                    Ok(n) if n == 0 => 0,//error!("Input Socket closed {}",addr);0 },
-                    Ok(n) => n,
-                    Err(e) => {
-                        error!("failed to read from socket; err = {:?}", e);
-                        return;
-                    }
-                };
-                if n != 0 {
-                    trace!("N size: {}", n);
-                    let data = (&buf[0..n]).to_vec();
-                    let str = String::from_utf8(data).unwrap();
-                    let msg = Message::to_me(str, String::from(&addr));
-                    info!("Processed incoming message from {}, data: {}", addr, msg);
-                    incoming_sender.send(msg);
+
+    /// Takes input from TCP socket and writes it to mpsc
+    async fn client_input_thread(addr: String, mut reader: tokio::net::tcp::OwnedReadHalf, mut incoming_sender: tokio::sync::mpsc::Sender<Message>) {
+        info!("[Socket Input] Starting for {}", addr);
+        //TODO NEED TO INCREASE BUFFER SIZE
+        let mut buf = [0; 1024];
+        loop {
+            let n = match reader.read(&mut buf).await {
+                // socket closed
+                Ok(n) if n == 0 => {
+                    error!("[Socket Input] for {} closing", addr);
+                    return;
                 }
+                Ok(n) => n,
+                Err(e) => {
+                    error!("[Socket Input] for {} failed to read error {:?}",addr, e);
+                    return;
+                }
+            };
+            let data = (&buf[0..n]).to_vec();
+            let str = String::from_utf8(data);
+            if str.is_ok() {
+                let msg = Message::to_me(str.unwrap(), String::from(&addr));
+                trace!("[Socket Input] Processed incoming message from {}, data: {}", addr, msg);
+                incoming_sender.send(msg).await;
+            }else{
+                warn!("[Socket Input] failed to parse data ({:?}) for {}",str,addr);
             }
-        });
+        }
     }
-    fn client_output_thread(addr: String, mut writer: tokio::net::tcp::OwnedWriteHalf, mut outgoing_receiver: Receiver<Message>) {
-        trace!("Starting output writer for {}", addr);
-        tokio::spawn(async move {
+    /// Takes input from mpsc and writes it to a TCP socket
+    async fn client_output_thread(addr: String, mut writer: tokio::net::tcp::OwnedWriteHalf, mut outgoing_receiver: tokio::sync::mpsc::Receiver<Message>) {
+        info!("[Socket Output] starting for {}", addr);
+        loop {
             let message = outgoing_receiver.recv().await;
             match message {
                 Some(msg) => {
-                    info!("Output writer thread writing: {}", msg);
-                    let res = writer.write_all(msg.data.as_bytes()).await;
-                    info!("Wrote data.. {:?}", res);
+                    match writer.write(msg.data.as_bytes()).await {
+                        Ok(T) => trace!("Socket Output wrote: {} for {} ", msg, addr),
+                        Err(E) => error!("Socket Output failed to write: {} for {} with error: {}", msg, addr, E)
+                    }
                 }
                 None => {
-                    warn!("Output writer thread for {} recieved null?", addr);
-                    //return;
+                    error!("Output writer thread for {} is closing", addr);
+                    writer.forget();
+                    return;
                 }
             }
-            trace!("Writing data to {}", addr);
-        });
+        }
     }
 }
 
-//noinspection RsUnresolvedReference (Won't accept tokio TcpListener)
-#[tokio::main]
-pub async fn listening_server(mut new_client_sender: Sender<Client>) -> Result<(), Box<dyn std::error::Error>> {
-    info!("Starting the listening server");
-    let mut listener = TcpListener::bind("127.0.0.1:5962").await?;
+
+impl fmt::Display for Client {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.addr)
+    }
+}
+/// Creates a new server socket
+///
+pub async fn listening_server(mut new_client_sender: tokio::sync::mpsc::Sender<Client>) -> Result<(), Box<dyn std::error::Error>> {
+    let addr="127.0.0.1:5962".to_string();
+    let mut listener = tokio::net::TcpListener::bind(addr).await?;
+    trace!("[Listening Server] Listening for connection on {}", listener.local_addr().unwrap());
     loop {
-        info!("Waiting for connection...");
         let (mut socket, addr) = listener.accept().await?;
-        info!("New connection from: {:?}", addr);
-        let (outgoing_sender, outgoing_receiver) = channel(10);
-        let (incoming_sender, incoming_receiver) = channel(10);
+        trace!("[Listening Server] New connection from: {}", addr);
+        //TODO Establish channel size
+        let (outgoing_sender, outgoing_receiver) = tokio::sync::mpsc::channel(10);
+        let (incoming_sender, incoming_receiver) = tokio::sync::mpsc::channel(10);
         let client = Client::from_connection(addr.to_string(), outgoing_sender, incoming_receiver);
         let (mut reader, mut writer) = socket.into_split();
-        Client::client_input_thread(addr.to_string(), reader, incoming_sender).await;
-        Client::client_output_thread(addr.to_string(), writer, outgoing_receiver);
-        new_client_sender.send(client);
+        tokio::spawn(async move {
+            Client::client_input_thread(addr.to_string(), reader, incoming_sender).await;
+        });
+        tokio::spawn(async move {
+            Client::client_output_thread(addr.to_string(), writer, outgoing_receiver).await;
+        });
+        new_client_sender.send(client).await;
     }
-}
-
-pub fn test_this() -> u32 {
-    4
 }
