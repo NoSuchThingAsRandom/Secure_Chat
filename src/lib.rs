@@ -18,11 +18,11 @@ use std::error::Error;
 use std::io::Write;
 use tokio::sync::mpsc::Receiver;
 
-use network::Client;
-use network::Message;
+use network_tokio_old::Client;
+use network_tokio_old::Message;
 use futures::executor::block_on;
-
 pub mod network;
+pub mod network_tokio_old;
 
 
 #[derive(EnumIter, EnumString, EnumMessage, Debug, AsRefStr)]

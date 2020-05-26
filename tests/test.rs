@@ -1,7 +1,7 @@
 use secure_chat_lib;
-use secure_chat_lib::{network, check_messages, update_clients};
+use secure_chat_lib::{network_tokio_old, check_messages, update_clients};
 use std::thread;
-use secure_chat_lib::network::Client;
+use secure_chat_lib::network_tokio_old::Client;
 use tokio::sync::mpsc::channel;
 use log::info;
 #[test]
@@ -11,7 +11,7 @@ fn recieve_client_connection(){
     thread::spawn(move|| {
         let mut clients :Vec<Client>=Vec::new();
         assert_eq!(2,3);
-        secure_chat_lib::network::listening_server(new_client_sender);
+        secure_chat_lib::network_tokio_old::listening_server(new_client_sender);
         info!("Updating clients");
         update_clients(&mut new_client_receiver,&mut clients);
         info!("Client size {}",clients.len());
@@ -26,10 +26,10 @@ fn recieve_messages(){
     let messages=vec!("Hello","How are you?");
     thread::spawn(|| {
         let mut clients :Vec<Client>=Vec::new();
-        secure_chat_lib::network::listening_server(new_client_sender);
+        secure_chat_lib::network_tokio_old::listening_server(new_client_sender);
         check_messages(&mut clients);
 
     });
 
-    assert_eq!(4,network::test_this())
+    assert_eq!(4, network_tokio_old::test_this())
 }
