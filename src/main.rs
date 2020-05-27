@@ -17,7 +17,8 @@ use secure_chat_lib::{update_clients, network};
 use std::error::Error;
 
 use std::sync::mpsc::{channel, TryRecvError};
-use std::net::TcpStream;
+use mio::net::TcpStream;
+use std::net::SocketAddr;
 use text_io::read;
 //use tokio::io::util::async_read_ext::AsyncReadExt;
 /*
@@ -78,7 +79,7 @@ pub fn main() {
             "Connect" => {
                 println!("Enter hostname:");
                 let hostname: String = read!("{}\n");
-                match TcpStream::connect(hostname) {
+                match TcpStream::connect(hostname.parse().unwrap()) {
                     Ok(stream) => {
                         let addr = stream.peer_addr().unwrap();
                         info!("Created new connection to {:?}", stream.peer_addr());
