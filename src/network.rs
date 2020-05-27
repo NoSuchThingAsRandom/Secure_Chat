@@ -1,11 +1,13 @@
 use std::fmt::Formatter;
-use std::{fmt, thread};
+use std::{fmt, thread, io};
 use std::net::{TcpListener, Shutdown};
 use std::net::TcpStream;
 use std::sync::mpsc::*;
 use std::io::{Write, Read};
 use futures::io::Error;
-use log::{trace,info, warn, error};
+use log::{trace, info, warn, error};
+use std::time::Duration;
+
 //const ADDR: String = String::from("127.0.01:5962");
 const MAX_CLIENTS_THREAD: u8 = 10;
 
@@ -43,7 +45,7 @@ fn check_clients(incoming_clients: &Receiver<Client>, clients: &mut Vec<Client>)
     while new_clients {
         match incoming_clients.try_recv() {
             Ok(C) => {
-                trace!("Added new client to input writer {}", C.addr);
+                trace!("Added new client to writer {}", C.addr);
                 C.stream.set_nonblocking(true);
                 clients.push(C)
             }
@@ -80,10 +82,11 @@ impl OutputWriter {
                 match messages_out.try_recv() {
                     Ok(msg) => {
                         let mut sent = false;
-                        for  client in &mut self.clients {
+                        for client in &mut self.clients {
                             if client.addr == msg.recipient {
                                 trace!("Sending new message to {}", msg.sender);
                                 client.stream.write(msg.data.as_ref());
+                                client.stream.flush();
                                 sent = true;
                                 break;
                             }
@@ -105,6 +108,7 @@ impl OutputWriter {
                     }
                 }
             }
+            thread::sleep(Duration::from_secs(2));
         }
     }
 }
@@ -128,27 +132,35 @@ impl InputReader {
                 let mut buffer = String::new();
                 match client.stream.read_to_string(&mut buffer) {
                     Ok(n) => {
+                        trace!("Got message of size {}", n);
                         if n > 0 {
                             messages_in.send(Message::new(buffer, String::from("me"), client.addr.clone())).unwrap();
                         }
                     }
+                    /*                        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        wait_for_fd();
+                        messages_in.send(Message::new(buffer, String::from("me"), client.addr.clone())).unwrap();
+                    }*/
                     Err(E) => {
                         error!("Error {} encountered reading from {}", E, client.addr);
                     }
                 }
             }
+            trace!("Input is looping");
+            thread::sleep(Duration::from_secs(2));
         }
     }
 }
 
+
 pub struct Network {
     pub output_writer_client_sender: Sender<Client>,
     pub input_reader_client_sender: Sender<Client>,
-    pub connections:Vec<Client>,
+    pub connections: Vec<Client>,
 }
 
 impl Network {
-    pub fn init(client_addr:Sender<String>, messages_in: Sender<Message>, messages_out: Receiver<Message>) -> Network {
+    pub fn init(client_addr: Sender<String>, messages_in: Sender<Message>, messages_out: Receiver<Message>) -> Network {
         info!("Creating network handler");
         let (output_writer_client_sender, output_writer_client_receiver) = channel();
         let (input_reader_client_sender, input_reader_client_receiver) = channel();
@@ -165,11 +177,11 @@ impl Network {
         thread::Builder::new().name(String::from("Listening Server")).spawn(move || {
             Network::listen(client_addr, listen_output_writer_client_sender, listen_input_reader_client_sender);
         });
-        Network { output_writer_client_sender, input_reader_client_sender,connections:Vec::new() }
+        Network { output_writer_client_sender, input_reader_client_sender, connections: Vec::new() }
     }
-    pub fn listen(client_addr:Sender<String>,output_writer_client_sender: Sender<Client>, input_reader_client_sender: Sender<Client>) {
+    pub fn listen(client_addr: Sender<String>, output_writer_client_sender: Sender<Client>, input_reader_client_sender: Sender<Client>) {
         info!("Starting listening server");
-        let mut listener = TcpListener::bind("127.0.0.1:5963").unwrap();
+        let mut listener = TcpListener::bind("127.0.0.1:5964").unwrap();
         loop {
             let (mut outgoing_stream, addr) = listener.accept().unwrap();
             info!("New client connection from: {}", addr);

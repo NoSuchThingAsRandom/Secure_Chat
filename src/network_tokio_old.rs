@@ -131,7 +131,7 @@ impl fmt::Display for Client {
 /// Creates a new server socket
 ///
 pub async fn listening_server(mut new_client_sender: tokio::sync::mpsc::Sender<Client>) -> Result<(), Box<dyn std::error::Error>> {
-    let addr = "127.0.0.1:5963".to_string();
+    let addr = "127.0.0.1:5964".to_string();
     let mut listener = tokio::net::TcpListener::bind(addr).await?;
     trace!("[Listening Server] Listening for connection on {}", listener.local_addr().unwrap());
     loop {
