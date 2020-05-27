@@ -65,6 +65,8 @@ impl ClientIo {
     fn new(incoming_clients: Receiver<Client>, messages_in: Sender<Message>, messages_out: Receiver<Message>) -> ClientIo {
         ClientIo { clients: HashMap::new(), current_client_count: 0, poll: Poll::new().unwrap(), incoming_clients, messages_in, messages_out }
     }
+
+
     pub fn start(&mut self) -> Result<(), TryRecvError> {
         let mut events = Events::with_capacity(128);
         info!("Starting output writer loop");
@@ -102,7 +104,12 @@ impl ClientIo {
                             if n > 0 {
                                 let msg = Message::new(String::from_utf8(buffer.to_vec()).expect("Invalid utf-8 received"), socket.stream.local_addr().unwrap().to_string(), socket.addr.clone());
                                 info!("Received {}", msg);
-                                self.messages_in.send(msg).unwrap();
+                                match self.messages_in.send(msg.clone()){
+                                    Ok(_) => {},
+                                    Err(E) => {
+                                        error!("Send message ({}) failed {}",msg,E);
+                                    },
+                                }
                             } else {
                                 info!("Didn't read any data? {:?}", buffer.to_vec());
                                 self.clients.remove(&event.token());
@@ -168,7 +175,7 @@ impl Network {
     ///     messages_in: New messages to be sent to clients
     ///     messages_out: To send incoming messages to the user thread
     ///
-    pub fn init(client_addr: Sender<String>, messages_in: Sender<Message>, messages_out: Receiver<Message>) -> Network {
+    pub fn init(address:String,client_addr: Sender<String>, messages_in: Sender<Message>, messages_out: Receiver<Message>) -> Network {
         info!("Creating network handler");
         let (client_sender, client_receiver) = channel();
 
@@ -183,7 +190,7 @@ impl Network {
         let listening_client_sender = client_sender.clone();
         thread::Builder::new().name(String::from("Listening Server")).spawn(move || {
             trace!("Created listening thread");
-            Network::listen(client_addr, listening_client_sender);
+            Network::listen(address,client_addr, listening_client_sender);
         });
 
 //Return network instance (With client sender for initiated connections)
@@ -196,11 +203,11 @@ impl Network {
     ///     client_addr: To send new client information to the user thread
     ///     client_sender: To send incoming clients to the IO thread
     ///
-    pub fn listen(client_addr: Sender<String>, client_sender: Sender<Client>) {
+    pub fn listen(address:String,client_addr: Sender<String>, client_sender: Sender<Client>) {
         info!("Starting listening server on {}",ADDR);
         let mut poll = Poll::new().unwrap();
         let mut events = Events::with_capacity(128);
-        let mut listener = mio::net::TcpListener::bind(ADDR.parse().unwrap()).unwrap();
+        let mut listener = mio::net::TcpListener::bind(address.parse().unwrap()).unwrap();
         poll.registry().register(&mut listener, Token(11), Interest::READABLE);
         loop {
             poll.poll(&mut events, Some(Duration::from_millis(100)));
