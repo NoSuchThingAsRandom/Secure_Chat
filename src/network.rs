@@ -15,12 +15,13 @@ use mio::{Poll, Token, Interest};
 use mio::Events;
 use mio::net::{TcpListener};
 use mio::net::TcpStream;
+use futures::future::err;
 
 
-//const ADDR: String = String::from("127.0.01:5962");
+pub(crate) const ADDR: &str = "127.0.0.1:5962";
 const MAX_CLIENTS_THREAD: u8 = 10;
 const SERVER: Token = Token(11);
-
+#[derive(Clone)]
 pub struct Message {
     pub(crate) data: String,
     pub sender: String,
@@ -41,11 +42,11 @@ impl fmt::Display for Message {
 
 pub struct Client {
     pub addr: String,
-    pub stream: TcpStream,
+    pub stream: mio::net::TcpStream,
 }
 
 impl Client {
-    pub fn new(addr: String, stream: TcpStream) -> Client {
+    pub fn new(addr: String, stream: mio::net::TcpStream) -> Client {
         Client { addr, stream }
     }
 }
@@ -66,53 +67,14 @@ impl ClientIo {
     }
     pub fn start(&mut self) -> Result<(), TryRecvError> {
         let mut events = Events::with_capacity(128);
-
-
         info!("Starting output writer loop");
         loop {
-            //info!("IO Loop");
             //Check for new clients
             self.check_clients()?;
 
             //Send messages
             let mut messages: Vec<Message> = self.messages_out.try_iter().collect();
-
-            self.poll.poll(&mut events, Some(Duration::from_millis(100)));
-            for event in events.iter() {
-                let mut socket = self.clients.get_mut(&event.token()).unwrap();
-                info!("Receieved event for {}",socket.addr);
-                let mut buffer = [0;1024];
-                if event.is_readable() {
-                    match socket.stream.read(&mut buffer) {
-                        Ok(n) => {
-                            trace!("Got message of size {} from {}", n,socket.addr);
-                            if n > 0 {
-                                let msg = Message::new(String::from_utf8(buffer.to_vec()).expect("Invalid utf-8 received"), String::from("me"), socket.addr.clone());
-                                info!("Received {}", msg);
-                                self.messages_in.send(msg).unwrap();
-                            } else {
-                                info!("Didn't read any data? {:?}",buffer.to_vec());
-                                //self.clients.remove(&event.token());
-                            }
-                        }
-                        Err(ref err) if err.kind() != ErrorKind::WouldBlock => {
-                            println!("Would block error: {}", err)
-                        }
-                        Err(E) => {
-                            error!("Error ({}) encountered reading from {}", E, socket.addr);
-                        }
-                    }
-                }else{
-                    info!("Non readable event {:?}",event);
-                }
-            }
-
-            for client in &mut self.clients.values_mut() {
-                //trace!("Checking for message {}", client.addr);
-                //Check for incoming messages
-
-
-                //Check for outgoing messages
+            for client in  self.clients.values_mut() {
                 messages.retain(|msg|
                     if client.addr == msg.recipient {
                         info!("Sending new message {}", msg);
@@ -127,8 +89,37 @@ impl ClientIo {
                 warn!("Failed to send {}", msg);
             }
 
-
-            thread::sleep(Duration::from_secs(2));
+            //Check for incoming messages
+            self.poll.poll(&mut events, Some(Duration::from_millis(100)));
+            for event in events.iter() {
+                let mut socket = self.clients.get_mut(&event.token()).unwrap();
+                info!("Received event for {}", socket.addr);
+                let mut buffer = [0; 1024];
+                if event.is_readable() {
+                    match socket.stream.read(&mut buffer) {
+                        Ok(n) => {
+                            trace!("Got message of size {} from {}", n, socket.addr);
+                            if n > 0 {
+                                let msg = Message::new(String::from_utf8(buffer.to_vec()).expect("Invalid utf-8 received"), socket.stream.local_addr().unwrap().to_string(), socket.addr.clone());
+                                info!("Received {}", msg);
+                                self.messages_in.send(msg).unwrap();
+                            } else {
+                                info!("Didn't read any data? {:?}", buffer.to_vec());
+                                self.clients.remove(&event.token());
+                                self.current_client_count-=1;
+                            }
+                        }
+                        Err(ref err) if err.kind() != ErrorKind::WouldBlock => {
+                            error!("Would block error: {}", err)
+                        }
+                        Err(E) => {
+                            error!("Error ({}) encountered reading from {}", E, socket.addr);
+                        }
+                    }
+                } else {
+                    warn!("Non readable event {:?}", event);
+                }
+            }
         }
     }
 
@@ -206,14 +197,14 @@ impl Network {
     ///     client_sender: To send incoming clients to the IO thread
     ///
     pub fn listen(client_addr: Sender<String>, client_sender: Sender<Client>) {
-        info!("Starting listening server");
+        info!("Starting listening server on {}",ADDR);
         let mut poll = Poll::new().unwrap();
         let mut events = Events::with_capacity(128);
-        let mut listener = TcpListener::bind("127.0.0.1:5963".parse().unwrap()).unwrap();
+        let mut listener = mio::net::TcpListener::bind(ADDR.parse().unwrap()).unwrap();
         poll.registry().register(&mut listener, Token(11), Interest::READABLE);
         loop {
             poll.poll(&mut events, Some(Duration::from_millis(100)));
-            for event in events.iter() {
+            for _event in events.iter() {
                 let (mut stream, addr) = listener.accept().unwrap();
                 info!("New client connection from: {}", addr);
                 client_sender.send(Client::new(addr.to_string(), stream));
