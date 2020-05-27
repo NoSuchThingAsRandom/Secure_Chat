@@ -73,18 +73,18 @@ pub fn main() {
     let mut clients: Vec<String> = Vec::new();
     loop {
         println!("Etner command:");
-        let command:String = read!("{}\n");
+        let command: String = read!("{}\n");
         match command.as_str() {
             "Connect" => {
                 println!("Enter hostname:");
-                let hostname:String = read!("{}\n");
+                let hostname: String = read!("{}\n");
                 match TcpStream::connect(hostname) {
-                    Ok(outgoing_stream) => {
-                        let addr = outgoing_stream.peer_addr().unwrap();
-                        info!("Created new connection to {:?}", outgoing_stream.peer_addr());
-                        let mut incoming_stream = outgoing_stream.try_clone().unwrap();
-                        network_struct.input_reader_client_sender.send(Client::new(addr.to_string(), incoming_stream));
-                        network_struct.output_writer_client_sender.send(Client::new(addr.to_string(), outgoing_stream));
+                    Ok(stream) => {
+                        let addr = stream.peer_addr().unwrap();
+                        info!("Created new connection to {:?}", stream.peer_addr());
+
+                        network_struct.client_sender.send(Client::new(addr.to_string(), stream));
+
                         clients.push(addr.to_string());
                     }
                     Err(E) => {
@@ -94,10 +94,10 @@ pub fn main() {
             }
             "Message" => {
                 println!("Etner the client name: ");
-                let name:String = read!("{}\n");
+                let name: String = read!("{}\n");
                 println!("Etner the message: ");
 
-                let data:String = read!("{}\n");
+                let data: String = read!("{}\n");
                 if clients.contains(&name) {
                     messages_out_sender.send(Message::new(data, name, String::from("ME")));
                 } else {
