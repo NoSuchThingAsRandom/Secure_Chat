@@ -178,7 +178,7 @@ impl InputLoop {
                     let time: Result<i64, <i64 as FromStr>::Err> = msg.data.parse();
                     match time {
                         Ok(T) => {
-                            let rec_time: i64 = chrono::Utc::now().timestamp_millis();
+                            let rec_time: i64 = chrono::Utc::now().timestamp_nanos();
                             println!("Time {} dif {}", rec_time, T);
                             println!("Received {}", rec_time - T);
                             differences.push(rec_time - T);
@@ -187,7 +187,7 @@ impl InputLoop {
                             for fuck in msg.data.split_whitespace() {
                                 let time: Result<i64, <i64 as FromStr>::Err> = fuck[0..fuck.len()].parse();
                                 if time.is_ok() {
-                                    let current = chrono::Utc::now().timestamp_millis();
+                                    let current = chrono::Utc::now().timestamp_nanos();
                                     let receievd = time.unwrap();
                                     //println!("CUrrent {} Time Sent{}",current,receievd);
                                     let different = current - receievd;
@@ -292,45 +292,43 @@ impl InputLoop {
                 thread::sleep(Duration::from_secs(5));
                 let messages = ["Hello"; 500];//vec!("Hello\n", "How are you?\n");
                 let mut differences: Vec<i64> = Vec::new();
-                for msg_index in 0..1000 {
+                for msg_index in 0..500 {
                     for address in &address_copy {
-                        let mut msg = chrono::Utc::now().timestamp_millis().to_string();
+                        let mut msg = chrono::Utc::now().timestamp_nanos().to_string();
                         msg.push(' ');
                         state.send_message(address.clone(), msg);
                     }
                     differences.append(&mut state.check_messages_bench());
                 }
-                thread::sleep(Duration::from_secs(1));
+                thread::sleep(Duration::from_secs(10));
                 for timetamp in state.check_messages_bench().iter() {
-                    differences.push((timetamp - 1000));
+                    differences.push((timetamp - 10000000000));
                 }
                 let mut total: i64 = 0;
                 for dif in &differences {
-                    if dif < &10000 {
-                        total = total + *dif as i64;
-                    }
+                    total = total + *dif as i64;
                 }
-
+                thread::sleep(Duration::from_secs(1));
                 if total > 0 {
                     total = total / differences.len() as i64;
                     println!("Mean difference in milis (maybe?) {}", total);
                 } else {
-                    println!("Time fucked up? {}", total, );
+                    println!("Time fucked up? {}\n{:?}", total,differences );
                 }
                 info!("     Sent messages");
                 total
                 //println!("     Sent messages");
             }));
         }
-        let size=thrads.len();
-        let mut total=0;
+        let size = thrads.len();
+        let mut total = 0;
         for thread in thrads {
-            let score=thread.join().unwrap();
-            if score>0{
-                total+=score;
+            let score = thread.join().unwrap();
+            if score > 0 {
+                total += score;
             }
         }
-        println!("\n\nTotal Average {}",total/ size as i64);
+        println!("\n\nTotal Average {}", total / size as i64);
 
 
         self.update_clients();
