@@ -205,7 +205,7 @@ impl InputLoop {
     fn update_clients(&mut self) {
         trace!("Checking for new clients");
         for client in self.user_client_receiver.try_iter() {
-            println!("New client from {}", client);
+            //println!("New client from {}", client);
 
             self.clients.push(ClientUser {
                 addr: client,
@@ -262,7 +262,7 @@ impl InputLoop {
         let mut states: Vec<InputLoop> = Vec::new();
         let mut port: u16 = 50000;
         //Start 10 instances
-        for connect_index in 0..100 {
+        for connect_index in 0..150 {
             let mut host = String::from("127.0.0.1:");
             host.push_str((port + connect_index).to_string().as_str());
             let mut state = InputLoop::new(host.clone());
@@ -287,10 +287,10 @@ impl InputLoop {
                         }
                     }
                 }
+                println!("Created connections");
                 info!("     Created connections");
                 state.update_clients();
                 thread::sleep(Duration::from_secs(5));
-                let messages = ["Hello"; 500];//vec!("Hello\n", "How are you?\n");
                 let mut differences: Vec<i64> = Vec::new();
                 for msg_index in 0..500 {
                     for address in &address_copy {
@@ -300,6 +300,7 @@ impl InputLoop {
                     }
                     differences.append(&mut state.check_messages_bench());
                 }
+                println!("Sent messages");
                 thread::sleep(Duration::from_secs(10));
                 for timetamp in state.check_messages_bench().iter() {
                     differences.push((timetamp - 10000000000));

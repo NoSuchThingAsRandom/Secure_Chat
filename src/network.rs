@@ -21,7 +21,7 @@ use mio::event::Source;
 
 
 pub(crate) const ADDR: &str = "127.0.0.1:5962";
-const MAX_CLIENTS_THREAD: u8 = 10;
+const MAX_CLIENTS_THREAD: u8 = 20;
 const SERVER: Token = Token(11);
 
 #[derive(Clone)]
@@ -172,13 +172,15 @@ pub struct Network {
 }
 
 struct NetworkWorker {
-    current_connection_count: u8,
-    thread_count: u8,
+    current_connection_count: u32,
+    thread_count: u32,
     client_map: HashMap<String, Sender<Message>>,
+    full_client_sender:Vec<Sender<Client>>,
     slave_client_sender: Sender<Client>,
     slave_messages_out_sender: Sender<Message>,
     master_messages_in: Sender<Message>,
     master_client_address: Sender<String>,
+
 }
 
 impl Network {
@@ -217,7 +219,7 @@ impl NetworkWorker {
             let mut client_io = ClientIo::new(client_receiver, slave_mesages_in, messages_out_receiver);
             client_io.start();
         });
-        NetworkWorker { current_connection_count: 0, thread_count: 0, client_map: HashMap::new(), slave_client_sender: client_sender, slave_messages_out_sender: messages_out_sender, master_messages_in: messages_in, master_client_address }
+        NetworkWorker { current_connection_count: 0, thread_count: 0, client_map: HashMap::new(), full_client_sender: Vec::new(), slave_client_sender: client_sender, slave_messages_out_sender: messages_out_sender, master_messages_in: messages_in, master_client_address }
     }
 
     fn start(&mut self, address:String, mut clients_in:Receiver<Client>,mut messages_out:Receiver<Message>) {
@@ -253,9 +255,10 @@ impl NetworkWorker {
 
 
     fn add_client(&mut self, new_client: Client) {
-        if self.current_connection_count >= MAX_CLIENTS_THREAD {
+        if self.current_connection_count >= MAX_CLIENTS_THREAD as u32 {
             //Update handlers
             let (new_client_sender, client_receiver) = channel();
+            self.full_client_sender.push(self.slave_client_sender.clone());
             self.slave_client_sender = new_client_sender;
 
             let (new_messages_out_sender, messages_out_receiver) = channel();
