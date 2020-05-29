@@ -1,7 +1,7 @@
 extern crate strum;
 extern crate strum_macros;
 
-use crate::network::{Message, Client, Network, ADDR};
+use crate::network::{Message, Client, Network};
 
 use strum::IntoEnumIterator;
 use strum::EnumMessage;
@@ -10,22 +10,20 @@ use strum_macros::EnumMessage;
 use strum_macros::EnumString;
 use strum_macros::AsRefStr;
 
-use log::{trace, info, warn, error};
+use log::{trace, info, error};
 use text_io::read;
 
-use mio::net::TcpStream;
+
 
 
 use std::str::FromStr;
-use std::error::Error;
-use std::io::Write;
+
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::{fmt, thread};
 use std::fmt::Formatter;
-use std::net::SocketAddr;
+
 use std::time::Duration;
-use log::Level::Info;
-use std::num::ParseIntError;
+
 
 pub mod network;
 
@@ -153,7 +151,7 @@ impl InputLoop {
                     return;
                 }
                 Commands::Test => {
-                    self.test();
+                    self.test_multi_server_multi_client();
                 }
             }
         }
@@ -178,7 +176,7 @@ impl InputLoop {
                     let time: Result<i64, <i64 as FromStr>::Err> = msg.data.parse();
                     match time {
                         Ok(T) => {
-                            let rec_time: i64 = chrono::Utc::now().timestamp_nanos();
+                            let rec_time: i64 = chrono::Utc::now().timestamp_millis();
                             println!("Time {} dif {}", rec_time, T);
                             println!("Received {}", rec_time - T);
                             differences.push(rec_time - T);
@@ -187,7 +185,7 @@ impl InputLoop {
                             for fuck in msg.data.split_whitespace() {
                                 let time: Result<i64, <i64 as FromStr>::Err> = fuck[0..fuck.len()].parse();
                                 if time.is_ok() {
-                                    let current = chrono::Utc::now().timestamp_nanos();
+                                    let current = chrono::Utc::now().timestamp_millis();
                                     let receievd = time.unwrap();
                                     //println!("CUrrent {} Time Sent{}",current,receievd);
                                     let different = current - receievd;
@@ -246,64 +244,102 @@ impl InputLoop {
     }
 
     fn send_message(&mut self, client_name: String, msg_data: String) -> bool {
+        println!("Attempting to send message to {}", client_name);
         for client in &mut self.clients {
             if client.addr == client_name {
                 trace!("Making message request to {}", &client);
-                let msg = Message::new(msg_data, client_name, String::from("ME"));
-                self.messages_out_sender.send(msg);
-                return true;
+                return match Message::new(msg_data, client_name, String::from("ME")) {
+                    Ok(msg) => {
+                        self.messages_out_sender.send(msg);
+                        true
+                    },
+                    Err(E) => {
+                        println!("Message data is too big!");
+                        false
+                    }
+                }
             }
         }
         false
     }
-    pub fn test(&mut self) {
-        info!("Starting tests");
+
+    fn shutdown(&mut self) {
+        self.messages_out_sender.send(Message::shutdown());
+    }
+    pub fn test_multi_server_multi_client(&mut self) {
+        info!("Starting multi client multi server test");
+        // Test consts
+        const NUM_THREADS: u32 = 10;
+        const NUM_INSTANCES: u32 = 120;
+        let instance_per_thread = (NUM_INSTANCES / NUM_THREADS) as usize;
+        const NUM_MESSAGES: u32 = 500;
+        const PORT: u32 = 50000;
+
         let mut addresses = Vec::new();
-        let mut states: Vec<InputLoop> = Vec::new();
-        let mut port: u16 = 50000;
-        //Start 10 instances
-        for connect_index in 0..150 {
+        let mut current_thread_state: Vec<InputLoop> = Vec::new();
+        let mut all_states: Vec<Vec<InputLoop>> = Vec::new();
+        println!("Starting instances");
+        //Start instances
+        for instances_index in 0..NUM_INSTANCES {
             let mut host = String::from("127.0.0.1:");
-            host.push_str((port + connect_index).to_string().as_str());
+            host.push_str((PORT + instances_index).to_string().as_str());
             let mut state = InputLoop::new(host.clone());
             addresses.push(host);
-            states.push(state);
+            if current_thread_state.len() == instance_per_thread {
+                all_states.push(current_thread_state);
+                current_thread_state = Vec::new();
+            }
+            current_thread_state.push(state);
         }
+        all_states.push(current_thread_state);
         info!("Created instances");
-        thread::sleep(Duration::from_secs(5));
-        //Connect to 10 instances
-        //Message 10 instances
-        let mut thrads = Vec::new();
-        for mut state in states {
+        //Start threads
+        let mut threads = Vec::new();
+        for mut state in all_states {
             let address_copy: Vec<String> = addresses.clone();
-            thrads.push(thread::spawn(move || {
-                for address in &address_copy {
-                    match state.connect(String::from(address)) {
-                        Some(C) => {
-                            state.clients.push(C);
-                        }
-                        None => {
-                            println!("Failed to connect to client");
+            threads.push(thread::spawn(move || {
+
+                //Connect to other clients
+                for sub_state in &mut state {
+                    for address in &address_copy {
+                        match sub_state.connect(String::from(address)) {
+                            Some(C) => {
+                                sub_state.clients.push(C);
+                            }
+                            None => {
+                                println!("Failed to connect to client");
+                            }
                         }
                     }
                 }
                 println!("Created connections");
-                info!("     Created connections");
-                state.update_clients();
-                thread::sleep(Duration::from_secs(5));
-                let mut differences: Vec<i64> = Vec::new();
-                for msg_index in 0..500 {
-                    for address in &address_copy {
-                        let mut msg = chrono::Utc::now().timestamp_nanos().to_string();
-                        msg.push(' ');
-                        state.send_message(address.clone(), msg);
-                    }
-                    differences.append(&mut state.check_messages_bench());
+                thread::sleep(Duration::from_secs(2));
+                for sub_state in &mut state {
+                    sub_state.update_clients();
                 }
+
+
+                //Send messages
+                let mut differences: Vec<i64> = Vec::new();
+                for msg_index in 0..NUM_MESSAGES {
+                    for sub_state in &mut state {
+                        for address in &address_copy {
+                            let mut msg = chrono::Utc::now().timestamp_millis().to_string();
+                            msg.push(' ');
+                            sub_state.send_message(address.clone(), msg);
+                        }
+                        differences.append(&mut sub_state.check_messages_bench());
+                    }
+                }
+
+
+                //Calculate average time difference
                 println!("Sent messages");
                 thread::sleep(Duration::from_secs(10));
-                for timetamp in state.check_messages_bench().iter() {
-                    differences.push((timetamp - 10000000000));
+                for sub_state in &mut state {
+                    for timestamp in sub_state.check_messages_bench().iter() {
+                        differences.push(timestamp - 10000);
+                    }
                 }
                 let mut total: i64 = 0;
                 for dif in &differences {
@@ -312,18 +348,17 @@ impl InputLoop {
                 thread::sleep(Duration::from_secs(1));
                 if total > 0 {
                     total = total / differences.len() as i64;
-                    println!("Mean difference in milis (maybe?) {}", total);
+                    println!("Mean difference in millis (maybe?) {}", total);
                 } else {
-                    println!("Time fucked up? {}\n{:?}", total,differences );
+                    println!("Time fucked up? {}", total);
                 }
                 info!("     Sent messages");
                 total
-                //println!("     Sent messages");
             }));
         }
-        let size = thrads.len();
+        let size = threads.len();
         let mut total = 0;
-        for thread in thrads {
+        for thread in threads {
             let score = thread.join().unwrap();
             if score > 0 {
                 total += score;
@@ -334,6 +369,129 @@ impl InputLoop {
 
         self.update_clients();
         info!("Finished");
+    }
+
+    /*pub fn test_single_server_multi_client(&mut self) {
+        info!("Starting multi client multi server test");
+        // Test consts
+        const NUM_THREADS: u32 = 10;
+        const NUM_INSTANCES: u32 = 120;
+        let instance_per_thread = (NUM_INSTANCES / NUM_THREADS) as usize;
+        const NUM_MESSAGES: u32 = 500;
+        const PORT: u32 = 50000;
+
+        let mut addresses = Vec::new();
+        let mut current_thread_state: Vec<InputLoop> = Vec::new();
+        let mut all_states: Vec<Vec<InputLoop>> = Vec::new();
+        println!("Starting instances");
+        //Start instances
+        for instances_index in 0..NUM_INSTANCES {
+            let mut host = String::from("127.0.0.1:");
+            host.push_str((PORT + instances_index + 1).to_string().as_str());
+            let state = InputLoop::new(host.clone());
+            addresses.push(host);
+            if current_thread_state.len() == instance_per_thread {
+                all_states.push(current_thread_state);
+                current_thread_state = Vec::new();
+            }
+            current_thread_state.push(state);
+        }
+        all_states.push(current_thread_state);
+
+        //Start Server Thread
+        thread::spawn(move || {
+            let mut host = String::from("127.0.0.1:");
+            host.push_str((PORT).to_string().as_str());
+            let mut state = InputLoop::new(host);
+            while state.clients.len() != NUM_INSTANCES as usize {
+                state.update_clients();
+            }
+            //Calculate average time difference
+            println!("Sent messages");
+
+
+            for timestamp in sub_state.check_messages_bench().iter() {
+                differences.push(timestamp - 10000);
+            }
+            let mut total: i64 = 0;
+            for dif in &differences {
+                total = total + *dif as i64;
+            }
+            thread::sleep(Duration::from_secs(1));
+            if total > 0 {
+                total = total / differences.len() as i64;
+                println!("Mean difference in millis (maybe?) {}", total);
+            } else {
+                println!("Time fucked up? {}", total);
+            }
+            info!("     Sent messages");
+
+            let size = threads.len();
+            let mut total = 0;
+
+            println!("\n\nTotal Average {}", total / size as i64);
+        });
+
+        thread::sleep(Duration::from_secs(5));
+        info!("Created instances");
+        //Start client threads
+        let mut threads = Vec::new();
+        for mut state in all_states {
+            let address_copy: Vec<String> = addresses.clone();
+            threads.push(thread::spawn(move || {
+                let mut host = String::from("127.0.0.1:");
+                host.push_str((PORT).to_string().as_str());
+                //Connect to server
+                for sub_state in &mut state {
+                    match sub_state.connect(host.clone()) {
+                        Some(C) => {
+                            sub_state.clients.push(C);
+                        }
+                        None => {
+                            println!("Failed to connect to client");
+                        }
+                    }
+                }
+                println!("Created connections");
+                thread::sleep(Duration::from_secs(5));
+
+                //Send messages
+                for msg_index in 0..NUM_MESSAGES {
+                    for sub_state in &mut state {
+                        let mut msg = chrono::Utc::now().timestamp_millis().to_string();
+                        msg.push(' ');
+                        sub_state.send_message(host.clone(), msg);
+                    }
+                }
+                state.get_mut(0).
+            }));
+        }
+
+
+        //Stop client threads
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        self.update_clients();
+        info!("Finished");
+    }*/
+
+    pub fn fish(&mut self) {
+        thread::sleep(Duration::from_secs(1));
+
+        let client = self.connect(String::from("127.0.0.1:49999")).unwrap();
+        self.clients.push(client);
+
+        for value in String::from("ABCDEF").split("") {
+            println!("{}", value);
+            println!("{}", self.send_message(String::from("127.0.0.1:49999"), value.to_string()));
+        }
+
+        thread::sleep(Duration::from_secs(5));
+        thread::sleep(Duration::from_secs(1));
+        self.shutdown();
+        println!("Done");
     }
 }
 

@@ -15,9 +15,7 @@ use std::{thread, time};
 use std::error::Error;
 
 use std::sync::mpsc::{channel, TryRecvError};
-use mio::net::TcpStream;
-use std::net::SocketAddr;
-use text_io::read;
+
 use secure_chat_lib::InputLoop;
 use std::time::Duration;
 
@@ -29,7 +27,7 @@ pub fn main() {
     config.set_time_level(LevelFilter::Error);
     CombinedLogger::init(
         vec![
-            //TermLogger::new(LevelFilter::Trace, config.build(), TerminalMode::Stdout),
+            TermLogger::new(LevelFilter::Trace, config.build(), TerminalMode::Stdout),
             WriteLogger::new(LevelFilter::Error, config.build(), File::create("Logs/master.log").unwrap()),
         ]
     ).unwrap();
@@ -40,5 +38,14 @@ pub fn main() {
     println!("{:?}",chrono::Utc::now().timestamp());
     info!("Initiating Setup!");
     let mut input_loop = InputLoop::new(String::from("127.0.0.1:49999"));
-    input_loop.test();
+    let mut test=InputLoop::new(String::from("127.0.0.1:49998"));
+    thread::spawn(move ||{
+        test.fish();
+    });
+    thread::sleep(Duration::from_secs(5));
+    loop{
+
+    }
+    //input_loop.test_multi_server_multi_client();
+    //input_loop.test_single_server_multi_client();
 }
