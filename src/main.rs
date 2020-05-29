@@ -43,6 +43,8 @@ pub fn main() {
         test.fish();
     });
     thread::sleep(Duration::from_secs(5));
+    input_loop.shutdown();
+    thread::sleep(Duration::from_secs(10));
     loop{
 
     }

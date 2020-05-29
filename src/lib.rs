@@ -263,7 +263,7 @@ impl InputLoop {
         false
     }
 
-    fn shutdown(&mut self) {
+    pub fn shutdown(&mut self) {
         self.messages_out_sender.send(Message::shutdown());
     }
     pub fn test_multi_server_multi_client(&mut self) {
@@ -487,6 +487,32 @@ impl InputLoop {
             println!("{}", value);
             println!("{}", self.send_message(String::from("127.0.0.1:49999"), value.to_string()));
         }
+        let lorem=
+            ["Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Tempus iaculis urna id volutpat lacus laoreet non. In egestas erat imperdiet sed euismod nisi porta lorem mollis. Praesent elementum facilisis leo vel. Arcu bibendum at varius vel pharetra vel turpis nunc. Aliquet nec ullamcorper sit amet risus nullam eget. Quam quisque id diam vel quam elementum pulvinar etiam. Ullamcorper sit amet risus nullam eget. Sodales neque sodales ut etiam sit. Nunc mi ipsum faucibus vitae aliquet. Nunc sed augue lacus viverra. Neque volutpat ac tincidunt vitae semper quis lectus. Tortor at auctor urna nunc id cursus metus aliquam eleifend. Ligula ullamcorper malesuada proin libero nunc consequat interdum. Et netus et malesuada fames ac turpis egestas integer eget. Nulla aliquet enim tortor at auctor urna nunc id cursus.
+
+Diam ut venenatis tellus in metus vulputate eu scelerisque felis. Sodales ut eu sem integer vitae justo eget. Arcu non sodales neque sodales ut etiam sit amet. Neque gravida in fermentum et. Metus aliquam eleifend mi in nulla posuere sollicitudin. Sed viverra ipsum nunc aliquet bibendum enim facilisis. Ultrices vitae auctor eu augue ut lectus arcu bibendum. Vestibulum morbi blandit cursus risus. Diam phasellus vestibulum lorem sed risus ultricies tristique nulla. Nullam eget felis eget nunc lobortis. Consequat ac felis donec et odio pellentesque diam volutpat commodo. At consectetur lorem donec massa. Rhoncus urna neque viverra justo. Quis viverra nibh cras pulvinar mattis nunc sed. Urna id volutpat lacus laoreet non curabitur.
+
+Nec sagittis aliquam malesuada bibendum arcu vitae elementum curabitur. Lacus vel facilisis volutpat est velit egestas dui id. Quis risus sed vulputate odio ut enim blandit. Nisl suscipit adipiscing bibendum est ultricies integer quis auctor. Gravida arcu ac tortor dignissim convallis aenean et tortor at. Nunc sed augue lacus viverra vitae. Sed faucibus turpis in eu mi. Sodales ut eu sem integer. Ac felis donec et odio pellentesque diam volutpat. Erat pellentesque adipiscing commodo elit at imperdiet. Ullamcorper malesuada proin libero nunc consequat interdum varius. Eros in cursus turpis massa. Sed arcu non odio euismod lacinia at quis risus. Tincidunt lobortis feugiat vivamus at augue eget. Amet cursus sit amet dictum sit amet justo. Elit at imperdiet dui accumsan. Tellus at urna condimentum mattis pellentesque id. Sit amet nulla facilisi morbi tempus. Velit egestas dui id ornare arcu odio ut sem. Augue neque gravida in fermentum et sollicitudin ac.
+
+Scelerisque in dictum non consectetur a erat nam at. Viverra tellus in hac habitasse platea dictumst. Fringilla est ullamcorper eget nulla facilisi etiam dignissim. Aenean et tortor at risus. Pulvinar mattis nunc sed blandit libero volutpat. Aliquam malesuada bibendum arcu vitae elementum curabitur vitae. Risus sed vulputate odio ut enim. Ac auctor augue mauris augue. Dolor sit amet consectetur adipiscing elit duis tristique sollicitudin. Augue mauris augue neque gravida in. Auctor elit sed vulputate mi sit amet mauris commodo quis. Bibendum enim facilisis gravida neque convallis a cras semper. Tellus in hac habitasse platea. Aliquet bibendum enim facilisis gravida neque convallis. Tempus quam pellentesque nec nam aliquam sem et tortor. Egestas sed sed risus pretium quam vulputate. Bibendum ut tristique et egestas quis ipsum.
+
+Turpis tincidunt id aliquet risus feugiat in ante metus dictum. Nunc lobortis mattis aliquam faucibus purus in. Aliquam sem fringilla ut morbi tincidunt augue interdum velit euismod. Nisi scelerisque eu ultrices vitae auctor eu augue ut. Est ante in nibh mauris cursus mattis molestie a iaculis. Non consectetur a erat nam at lectus. Odio facilisis mauris sit amet massa vitae. Feugiat nibh sed pulvinar proin. Egestas fringilla phasellus faucibus scelerisque eleifend donec pretium. Eget nullam non nisi est sit. Nunc vel risus commodo viverra. Lobortis mattis aliquam faucibus purus in massa. Sapien pellentesque habitant morbi tristique senectus.
+
+Tellus in hac habitasse platea dictumst vestibulum rhoncus. Consectetur a erat nam at lectus urna duis. Nunc eget lorem dolor sed viverra ipsum nunc aliquet. Vitae et leo duis ut diam quam nulla. Pulvinar etiam non quam lacus. Consequat id porta nibh venenatis cras. Venenatis cras sed felis eget velit aliquet sagittis. Libero justo laoreet sit amet cursus sit. Rhoncus est pellentesque elit ullamcorper dignissim cras tincidunt. Nulla facilisi nullam vehicula ipsum. Lectus sit amet est placerat in egestas. Egestas quis ipsum suspendisse ultrices gravida dictum fusce ut placerat. Aenean euismod elementum nisi quis. Duis ultricies lacus sed turpis tincidunt id aliquet. Ipsum nunc aliquet bibendum enim facilisis gravida. Felis donec et odio pellentesque diam volutpat commodo sed egestas. Feugiat nisl pretium fusce id velit ut tortor. Eget nunc lobortis mattis aliquam faucibus purus. Ac tincidunt vitae semper quis lectus nulla at volutpat.
+
+Ipsum nunc aliquet bibendum enim facilisis gravida neque convallis. Non consectetur a erat nam at lectus urna duis convallis. Non sodales neque sodales ut etiam sit amet. Fermentum dui faucibus in ornare quam viverra. Imperdiet nulla malesuada pellentesque elit eget gravida cum sociis. At volutpat diam ut venenatis tellus in metus vulputate eu. Volutpat blandit aliquam etiam erat velit scelerisque in. Ipsum dolor sit amet consectetur adipiscing elit pellentesque. Pharetra convallis posuere morbi leo urna molestie at elementum. Fames ac turpis egestas integer. Suscipit tellus mauris a diam maecenas sed enim ut sem.
+
+Semper quis lectus nulla at volutpat. Nibh cras pulvinar mattis nunc sed. Amet volutpat consequat mauris nunc congue nisi. Tincidunt tortor aliquam nulla facilisi cras fermentum. Pulvinar etiam non quam lacus suspendisse faucibus interdum. Suspendisse ultrices gravida dictum fusce. Scelerisque mauris pellentesque pulvinar pellentesque habitant morbi tristique senectus et. Lacus vestibulum sed arcu non odio euismod lacinia at. Dolor sit amet consectetur adipiscing elit. Enim sit amet venenatis urna cursus eget nunc scelerisque. Tortor consequat id porta nibh venenatis cras sed felis. Amet tellus cras adipiscing enim eu turpis. Nunc mattis enim ut tellus elementum. Natoque penatibus et magnis dis parturient montes nascetur ridiculus. Nam aliquam sem et tortor consequat id porta.
+
+Arcu non odio euismod lacinia at quis risus sed. Blandit cursus risus at ultrices. Facilisis volutpat est velit egestas dui. Varius sit amet mattis vulputate enim nulla. Nibh cras pulvinar mattis nunc sed blandit libero. Faucibus a pellentesque sit amet porttitor eget dolor morbi non. Id volutpat lacus laoreet non curabitur. Morbi blandit cursus risus at ultrices mi tempus. Praesent elementum facilisis leo vel fringilla est ullamcorper eget nulla. Sed odio morbi quis commodo odio.
+
+Vitae tempus quam pellentesque nec nam aliquam. At augue eget arcu dictum varius duis at. Velit ut tortor pretium viverra suspendisse potenti. In dictum non consectetur a erat nam. Nisi lacus sed viverra tellus in hac habitasse. Sit amet nisl purus in. Congue nisi vitae suscipit tellus. Condimentum id venenatis a condimentum vitae sapien. Auctor urna nunc id cursus metus aliquam eleifend. Purus semper eget duis at tellus at urna. Eu consequat ac felis donec et odio pellentesque. Amet venenatis urna cursus eget. Sit amet dictum sit amet justo donec."
+        ;8].to_vec();
+        let mut value =String::new();
+        for imspum in lorem{
+            value.push_str(imspum);
+        }
+        println!("{}", self.send_message(String::from("127.0.0.1:49999"), value.to_string()));
 
         thread::sleep(Duration::from_secs(5));
         thread::sleep(Duration::from_secs(1));

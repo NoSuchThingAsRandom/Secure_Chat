@@ -18,7 +18,7 @@ use mio::Events;
 pub(crate) const ADDR: &str = "127.0.0.1:5962";
 const MAX_CLIENTS_THREAD: u8 = 20;
 const SERVER: Token = Token(11);
-const MAX_MESSAGE_BYTES: u8 = 16;
+const MAX_MESSAGE_BYTES: u16 = 65535;
 
 #[derive(Clone, PartialEq)]
 pub enum MessageOptions {
@@ -37,7 +37,7 @@ pub struct Message {
 impl Message {
     pub fn new(data: String, recipient: String, sender: String) -> Result<Message, Error> {
         if data.as_bytes().len() > MAX_MESSAGE_BYTES as usize {
-            unimplemented!("Message data is too big!")
+            unimplemented!("Message data is too big!\nMessage bytes {}", data.as_bytes().len())
         }
         let message = Message { data, sender, recipient, options: MessageOptions::None };
         Ok(message)
@@ -92,25 +92,33 @@ impl ClientIo {
     pub fn start(&mut self) -> Result<(), TryRecvError> {
         let mut events = Events::with_capacity(128);
         info!("Starting IO writer loop");
-        loop {
+        let mut shutdown = false;
+        while !shutdown {
             //Check for new clients
-            self.check_clients()?;
+            if self.check_clients().is_err() {
+                shutdown = true;
+            }
 
             //Send messages
             let mut messages: Vec<Message> = self.messages_out.try_iter().collect();
             for client in self.clients.values_mut() {
                 messages.retain(|msg|
-                    if client.addr == msg.recipient {
-                        info!("Sending new message {}", msg);
-                        let data = msg.data.as_bytes();
-                        let size = data.len() as u16;
-                        let size_bytes = size.to_be_bytes();
-                        client.stream.write(&size_bytes);
-                        client.stream.write(data);
-                        client.stream.flush();
+                    if msg.options == MessageOptions::Shutdown {
+                        shutdown = true;
                         false
                     } else {
-                        true
+                        if client.addr == msg.recipient {
+                            info!("Sending new message {}", msg);
+                            let data = msg.data.as_bytes();
+                            let size = data.len() as u16;
+                            let size_bytes = size.to_be_bytes();
+                            client.stream.write(&size_bytes);
+                            client.stream.write(data);
+                            client.stream.flush();
+                            false
+                        } else {
+                            true
+                        }
                     });
             }
             for msg in messages {
@@ -120,54 +128,74 @@ impl ClientIo {
             //Check for incoming messages
             self.poll.poll(&mut events, Some(Duration::from_millis(100)));
             for event in events.iter() {
-                let mut socket = self.clients.get_mut(&event.token()).unwrap();
-                info!("Received event for {}", socket.addr);
-                let mut buffer: [u8; 512] = [0; 512];
-                if event.is_readable() {
-                    match socket.stream.read(&mut buffer) {
-                        Ok(n) => {
-                            trace!("Got message of size {} from {}", n, socket.addr);
-                            if n > 0 {
-                                socket.client_buffer.append(&mut buffer[0..n].to_vec());
-                                while socket.client_buffer.len() > 2 {
-                                    let cloned_buffer=socket.client_buffer.clone();
-                                    let (size, buffer) = cloned_buffer.split_at(2);
-                                    let data_size = u16::from_be_bytes([size[0], size[1]]);
-                                    if buffer.len() > data_size as usize + 2 {
-                                        let (msg_bytes, remaining_bytes) = buffer.split_at(data_size as usize).clone();
 
-                                        let msg = Message::new(String::from_utf8(msg_bytes.to_vec()).expect("Invalid utf-8 received"), socket.stream.local_addr().unwrap().to_string(), socket.addr.clone()).unwrap();
-                                        warn!("Received {}", msg);
-                                        match self.messages_in.send(msg.clone()) {
-                                            Ok(_) => {}
-                                            Err(E) => {
-                                                error!("Send message ({}) failed {}", msg, E);
-                                            }
-                                        }
-                                        socket.client_buffer = remaining_bytes.to_vec();
-                                    }
-                                }
-                            } else if n < 0 {
-                                error!("Buffer has been filled!!!!");
-                                //Buffer has been filled!
-                            } else {
-                                warn!("Didn't read data,closing!");
-                                self.clients.remove(&event.token());
-                                self.current_client_count -= 1;
-                            }
-                        }
-                        Err(ref err) if err.kind() != ErrorKind::WouldBlock => {
-                            error!("Would block error: {}", err)
-                        }
-                        Err(E) => {
-                            error!("Error ({}) encountered reading from {}", E, socket.addr);
-                        }
-                    }
+                //info!("Received event for {}", socket.addr);
+
+                if event.is_readable() {
+                    self.read_data(event.token());
                 } else {
                     warn!("Non readable event {:?}", event);
                 }
             }
         }
+        info!("Shutting down IO thread");
+        for client in self.clients.values_mut() {
+            client.stream.shutdown(Shutdown::Both).expect("Failed to shutdown");
+        }
+        for client in self.clients.values_mut() {
+            if !client.client_buffer.is_empty() {
+                println!("Client buffer for {} is not empty!!!", client.addr);
+            }
+            client.close();
+        }
+        Ok(())
+    }
+
+    fn read_data(&mut self, token:Token) ->bool{
+        let mut socket = self.clients.get_mut(&token).unwrap();
+        let mut buffer: [u8; 512] = [0; 512];
+        match socket.stream.read(&mut buffer) {
+            Ok(n) => {
+                trace!("Got message of size {} from {}", n, socket.addr);
+                if n > 0 {
+                    socket.client_buffer.append(&mut buffer[0..n].to_vec());
+                    while socket.client_buffer.len() > 2 {
+                        let cloned_buffer = socket.client_buffer.clone();
+                        let (size, buffer) = cloned_buffer.split_at(2);
+                        let data_size = u16::from_be_bytes([size[0], size[1]]);
+                        if buffer.len() >= data_size as usize {
+                            let (msg_bytes, remaining_bytes) = buffer.split_at(data_size as usize).clone();
+
+                            let msg = Message::new(String::from_utf8(msg_bytes.to_vec()).expect("Invalid utf-8 received"), socket.stream.local_addr().unwrap().to_string(), socket.addr.clone()).unwrap();
+                            warn!("Received {}", msg);
+                            match self.messages_in.send(msg.clone()) {
+                                Ok(_) => {}
+                                Err(E) => {
+                                    error!("Send message ({}) failed {}", msg, E);
+                                }
+                            }
+                            socket.client_buffer = remaining_bytes.to_vec();
+                        } else {
+                            break;
+                        }
+                    }
+                } else if n < 0 {
+                    error!("Buffer has been filled!!!!");
+                    //Buffer has been filled!
+                } else {
+                    warn!("Didn't read data,closing!");
+                    self.clients.remove(&token);
+                    self.current_client_count -= 1;
+                }
+            }
+            Err( ref err) if err.kind() != ErrorKind::WouldBlock => {
+                error!("Would block error: {}", err)
+            }
+            Err(E) => {
+                error!("Error ({}) encountered reading from {}", E, socket.addr);
+            }
+        }
+        true
     }
 
 
@@ -185,19 +213,11 @@ impl ClientIo {
                 Err(E) => if E == TryRecvError::Empty {
                     new_clients = false;
                 } else {
-                    self.shutdown();
                     return Err(E);
                 },
             }
         }
         Ok(())
-    }
-
-    fn shutdown(&mut self) {
-        info!("Initiating IO thread shutdown");
-        for client in self.clients.values_mut() {
-            client.stream.shutdown(Shutdown::Both).expect("Failed to shutdown");
-        }
     }
 }
 
@@ -212,6 +232,7 @@ struct NetworkWorker {
     current_connection_count: u32,
     thread_count: u32,
     client_map: HashMap<String, Sender<Message>>,
+    client_io_shutdown_senders: Vec<Sender<Message>>,
     full_client_sender: Vec<Sender<Client>>,
     slave_client_sender: Sender<Client>,
     slave_messages_out_sender: Sender<Message>,
@@ -250,13 +271,15 @@ impl NetworkWorker {
         //Start io thread
         let (mut client_sender, mut client_receiver) = channel();
         let (mut messages_out_sender, mut messages_out_receiver) = channel();
+        let mut shutdown_senders = Vec::new();
+        shutdown_senders.push(messages_out_sender.clone());
         let slave_mesages_in = messages_in.clone();
         thread::Builder::new().name(String::from("Client IO")).spawn(move || {
             trace!("Created IO thread");
             let mut client_io = ClientIo::new(client_receiver, slave_mesages_in, messages_out_receiver);
             client_io.start();
         });
-        NetworkWorker { current_connection_count: 0, thread_count: 0, client_map: HashMap::new(), full_client_sender: Vec::new(), slave_client_sender: client_sender, slave_messages_out_sender: messages_out_sender, master_messages_in: messages_in, master_client_address }
+        NetworkWorker { current_connection_count: 0, thread_count: 0, client_map: HashMap::new(), full_client_sender: Vec::new(), slave_client_sender: client_sender, slave_messages_out_sender: messages_out_sender, master_messages_in: messages_in, master_client_address, client_io_shutdown_senders: shutdown_senders }
     }
 
     fn start(&mut self, address: String, mut clients_in: Receiver<Client>, mut messages_out: Receiver<Message>) {
@@ -286,14 +309,18 @@ impl NetworkWorker {
             }
             for msg in messages_out.try_iter() {
                 if msg.options == MessageOptions::Shutdown {
-                    unimplemented!("Need to shutdown safely!!!");
+                    for shutdown in &mut self.client_io_shutdown_senders {
+                        shutdown.send(Message::shutdown());
+                    }
+                    error!("Need to shutdown safely!!!");
+                    return;
                 } else {
                     self.client_map.get_mut(msg.recipient.as_str()).unwrap().send(msg);
                 }
             }
         }
     }
-    fn shutdown(&mut self) {}
+
 
     fn add_client(&mut self, new_client: Client) {
         if self.current_connection_count >= MAX_CLIENTS_THREAD as u32 {
@@ -303,6 +330,7 @@ impl NetworkWorker {
             self.slave_client_sender = new_client_sender;
 
             let (new_messages_out_sender, messages_out_receiver) = channel();
+            self.client_io_shutdown_senders.push(new_messages_out_sender.clone());
             self.slave_messages_out_sender = new_messages_out_sender;
             let mut thread_name = String::from("Client IO - ");
             let slave_messages_in = self.master_messages_in.clone();
