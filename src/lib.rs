@@ -1,29 +1,22 @@
 extern crate strum;
 extern crate strum_macros;
 
-use crate::network::{Message, Client, Network};
+use std::{fmt, thread};
+use std::fmt::Formatter;
+use std::str::FromStr;
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::time::Duration;
 
-use strum::IntoEnumIterator;
+use log::{error, info, trace};
 use strum::EnumMessage;
+use strum::IntoEnumIterator;
+use strum_macros::AsRefStr;
 use strum_macros::EnumIter;
 use strum_macros::EnumMessage;
 use strum_macros::EnumString;
-use strum_macros::AsRefStr;
-
-use log::{trace, info, error};
 use text_io::read;
 
-
-
-
-use std::str::FromStr;
-
-use std::sync::mpsc::{Receiver, Sender, channel};
-use std::{fmt, thread};
-use std::fmt::Formatter;
-
-use std::time::Duration;
-
+use crate::network::{Client, Message, Network};
 
 pub mod network;
 
@@ -60,8 +53,8 @@ impl Commands {
         let input: String = read!("{}\n");
         match
         Commands::from_str(&input) {
-            Ok(T) => T,
-            Err(E) => {
+            Ok(t) => t,
+            Err(_) => {
                 println!("Invalid option!\n\n{}", Commands::get_help_dialog());
                 Commands::get_user_command()
             }
@@ -115,9 +108,9 @@ impl InputLoop {
                     println!("Enter hostname:");
                     let host_string: String = read!("{}\n");
                     match self.connect(host_string) {
-                        Some(C) => {
-                            println!("Connected to client {}", C);
-                            self.clients.push(C);
+                        Some(c) => {
+                            println!("Connected to client {}", c);
+                            self.clients.push(c);
                         }
                         None => {
                             println!("Failed to connect to client");
@@ -159,7 +152,7 @@ impl InputLoop {
     fn check_messages(&mut self) {
         info!("Updating messages");
         for msg in self.messages_in_receiver.try_iter() {
-            for mut client in &mut self.clients {
+            for client in &mut self.clients {
                 if client.addr == msg.sender {
                     println!("{}", msg);
                     client.messages.push(msg.clone());
@@ -171,15 +164,15 @@ impl InputLoop {
         info!("Updating messages");
         let mut differences = Vec::new();
         for msg in self.messages_in_receiver.try_iter() {
-            for mut client in &mut self.clients {
+            for client in &mut self.clients {
                 if client.addr == msg.sender {
                     let time: Result<i64, <i64 as FromStr>::Err> = msg.data.parse();
                     match time {
-                        Ok(T) => {
+                        Ok(t) => {
                             let rec_time: i64 = chrono::Utc::now().timestamp_millis();
-                            println!("Time {} dif {}", rec_time, T);
-                            println!("Received {}", rec_time - T);
-                            differences.push(rec_time - T);
+                            println!("Time {} dif {}", rec_time, t);
+                            println!("Received {}", rec_time - t);
+                            differences.push(rec_time - t);
                         }
                         Err(_) => {
                             for fuck in msg.data.split_whitespace() {
@@ -236,8 +229,8 @@ impl InputLoop {
                     nickname: local_addr.to_string(),
                 })
             }
-            Err(E) => {
-                error!("Failed to create new client {}", E);
+            Err(e) => {
+                error!("Failed to create new client {}", e);
                 None
             }
         }
@@ -250,10 +243,14 @@ impl InputLoop {
                 trace!("Making message request to {}", &client);
                 return match Message::new(msg_data, client_name, String::from("ME")) {
                     Ok(msg) => {
-                        self.messages_out_sender.send(msg);
-                        true
+                        if self.messages_out_sender.send(msg).is_err() {
+                            error!("Failed to send message to networking thread");
+                            false
+                        } else {
+                            true
+                        }
                     },
-                    Err(E) => {
+                    Err(_) => {
                         println!("Message data is too big!");
                         false
                     }
@@ -264,7 +261,7 @@ impl InputLoop {
     }
 
     pub fn shutdown(&mut self) {
-        self.messages_out_sender.send(Message::shutdown());
+        self.messages_out_sender.send(Message::shutdown()).expect("Failed to send shutdown command");
     }
     pub fn test_multi_server_multi_client(&mut self) {
         info!("Starting multi client multi server test");
@@ -283,7 +280,7 @@ impl InputLoop {
         for instances_index in 0..NUM_INSTANCES {
             let mut host = String::from("127.0.0.1:");
             host.push_str((PORT + instances_index).to_string().as_str());
-            let mut state = InputLoop::new(host.clone());
+            let state = InputLoop::new(host.clone());
             addresses.push(host);
             if current_thread_state.len() == instance_per_thread {
                 all_states.push(current_thread_state);
@@ -303,8 +300,8 @@ impl InputLoop {
                 for sub_state in &mut state {
                     for address in &address_copy {
                         match sub_state.connect(String::from(address)) {
-                            Some(C) => {
-                                sub_state.clients.push(C);
+                            Some(c) => {
+                                sub_state.clients.push(c);
                             }
                             None => {
                                 println!("Failed to connect to client");
@@ -321,7 +318,7 @@ impl InputLoop {
 
                 //Send messages
                 let mut differences: Vec<i64> = Vec::new();
-                for msg_index in 0..NUM_MESSAGES {
+                for _msg_index in 0..NUM_MESSAGES {
                     for sub_state in &mut state {
                         for address in &address_copy {
                             let mut msg = chrono::Utc::now().timestamp_millis().to_string();
@@ -517,7 +514,7 @@ Vitae tempus quam pellentesque nec nam aliquam. At augue eget arcu dictum varius
         thread::sleep(Duration::from_secs(5));
         thread::sleep(Duration::from_secs(1));
         self.shutdown();
-        println!("Done");
+        println!("Finished test");
     }
 }
 

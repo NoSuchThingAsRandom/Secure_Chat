@@ -1,24 +1,16 @@
-extern crate simplelog;
 #[macro_use]
 extern crate log;
+extern crate simplelog;
 
-use secure_chat_lib;
+use std::fs::File;
+use std::thread;
+use std::time::Duration;
 
 use log::LevelFilter;
 use simplelog::*;
 
-use std::fs::{File, read};
-
-use std::{thread, time};
-
-
-use std::error::Error;
-
-use std::sync::mpsc::{channel, TryRecvError};
-
+use secure_chat_lib;
 use secure_chat_lib::InputLoop;
-use std::time::Duration;
-
 
 pub fn main() {
     let mut config = ConfigBuilder::new();
@@ -45,9 +37,8 @@ pub fn main() {
     thread::sleep(Duration::from_secs(5));
     input_loop.shutdown();
     thread::sleep(Duration::from_secs(10));
-    loop{
 
-    }
+
     //input_loop.test_multi_server_multi_client();
     //input_loop.test_single_server_multi_client();
 }

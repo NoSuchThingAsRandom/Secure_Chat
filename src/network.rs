@@ -1,23 +1,19 @@
-use std::fmt::Formatter;
-use std::io::{Write, Read, ErrorKind};
-use std::time::Duration;
-use std::collections::HashMap;
-
-use std::sync::mpsc::*;
 use std::{fmt, thread};
+use std::collections::HashMap;
+use std::fmt::Formatter;
+use std::io::{ErrorKind, Read, Write};
 use std::net::Shutdown;
+use std::sync::mpsc::*;
+use std::time::Duration;
 
 use futures::io::Error;
-use log::{trace, info, warn, error};
-
-
-use mio::{Poll, Token, Interest};
+use log::{error, info, trace, warn};
+use mio::{Interest, Poll, Token};
 use mio::Events;
 
-
-pub(crate) const ADDR: &str = "127.0.0.1:5962";
+//pub(crate) const ADDR: &str = "127.0.0.1:5962";
 const MAX_CLIENTS_THREAD: u8 = 20;
-const SERVER: Token = Token(11);
+//const SERVER: Token = Token(11);
 const MAX_MESSAGE_BYTES: u16 = 65535;
 
 #[derive(Clone, PartialEq)]
@@ -68,8 +64,28 @@ impl Client {
     pub fn new(addr: String, stream: mio::net::TcpStream) -> Client {
         Client { addr, stream, client_buffer: Vec::new() }
     }
-    pub fn close(&mut self) {
-        self.stream.shutdown(Shutdown::Both);
+    pub fn get_messages_from_buffer(&mut self) -> Vec<Message> {
+        let mut messages = Vec::new();
+        while self.client_buffer.len() > 2 {
+            let cloned_buffer = self.client_buffer.clone();
+            let (size, buffer) = cloned_buffer.split_at(2);
+            let data_size = u16::from_be_bytes([size[0], size[1]]);
+            trace!("Message size is {}, buffer size {}", data_size, buffer.len());
+            if buffer.len() >= data_size as usize {
+                let (msg_bytes, remaining_bytes) = buffer.split_at(data_size as usize).clone();
+
+                let msg = Message::new(String::from_utf8(msg_bytes.to_vec()).expect("Invalid utf-8 received"), self.stream.local_addr().unwrap().to_string(), self.addr.clone()).unwrap();
+                trace!("Received {}", msg);
+                messages.push(msg);
+                self.client_buffer = remaining_bytes.to_vec();
+            } else {
+                break;
+            }
+        }
+        return messages;
+    }
+    pub fn close(&mut self) -> Result<(), std::io::Error> {
+        self.stream.shutdown(Shutdown::Both)
     }
 }
 
@@ -88,7 +104,15 @@ impl ClientIo {
         ClientIo { clients: HashMap::new(), current_client_count: 0, poll: Poll::new().unwrap(), incoming_clients, messages_in, messages_out }
     }
 
-
+    fn send_message(client: &mut Client, msg: &Message) -> Result<(), std::io::Error> {
+        trace!("Sending message {}", msg);
+        let data = msg.data.as_bytes();
+        let size = data.len() as u16;
+        let size_bytes = size.to_be_bytes();
+        client.stream.write(&size_bytes)?;
+        client.stream.write(data)?;
+        client.stream.flush()
+    }
     pub fn start(&mut self) -> Result<(), TryRecvError> {
         let mut events = Events::with_capacity(128);
         info!("Starting IO writer loop");
@@ -108,14 +132,13 @@ impl ClientIo {
                         false
                     } else {
                         if client.addr == msg.recipient {
-                            info!("Sending new message {}", msg);
-                            let data = msg.data.as_bytes();
-                            let size = data.len() as u16;
-                            let size_bytes = size.to_be_bytes();
-                            client.stream.write(&size_bytes);
-                            client.stream.write(data);
-                            client.stream.flush();
-                            false
+                            match ClientIo::send_message(client, msg) {
+                                Ok(_) => { false }
+                                Err(e) => {
+                                    error!("Failed to send messge ({}), ({})", msg, e);
+                                    true
+                                }
+                            }
                         } else {
                             true
                         }
@@ -126,76 +149,98 @@ impl ClientIo {
             }
 
             //Check for incoming messages
-            self.poll.poll(&mut events, Some(Duration::from_millis(100)));
+            self.poll.poll(&mut events, Some(Duration::from_millis(100))).expect("Failed to poll for new events");
             for event in events.iter() {
 
                 //info!("Received event for {}", socket.addr);
 
                 if event.is_readable() {
-                    self.read_data(event.token());
+                    let mut socket = self.clients.get_mut(&event.token()).unwrap();
+                    match ClientIo::read_data(&mut socket) {
+                        Ok(messages) => {
+                            for msg in messages {
+                                match self.messages_in.send(msg) {
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        error!("Send message to user thread failed {}", e);
+                                        shutdown = true;
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to read data {}", e);
+                            self.clients.remove(&event.token());
+                            self.current_client_count -= 1;
+                        }
+                    }
                 } else {
                     warn!("Non readable event {:?}", event);
                 }
             }
         }
-        info!("Shutting down IO thread");
-        for client in self.clients.values_mut() {
-            client.stream.shutdown(Shutdown::Both).expect("Failed to shutdown");
-        }
+        info!("Starting shutdown of IO thread");
+        trace!("Checking for unparsed data in buffers");
         for client in self.clients.values_mut() {
             if !client.client_buffer.is_empty() {
-                println!("Client buffer for {} is not empty!!!", client.addr);
+                info!("Client buffer for {} is not empty!!!", client.addr);
+                trace!("Dumping buffer\n{:?}", client.client_buffer);
+
+                let messages = ClientIo::read_data(client);
+                if messages.is_ok() {
+                    for msg in messages.unwrap() {
+                        println!("Got {}", msg);
+                        match self.messages_in.send(msg) {
+                            Ok(_) => {}
+                            Err(e) => {
+                                error!("Send message to user thread failed {}", e);
+                            }
+                        }
+                    }
+                } else {
+                    error!("Failed getting data from buffer {}", messages.err().unwrap());
+                }
             }
-            client.close();
+            match client.close() {
+                Ok(_) => {}
+                Err(e) => {
+                    error!("Failed to close {}, as ({})", client.addr, e);
+                }
+            };
         }
+        info!("Closed IO thread");
         Ok(())
     }
 
-    fn read_data(&mut self, token:Token) ->bool{
-        let mut socket = self.clients.get_mut(&token).unwrap();
-        let mut buffer: [u8; 512] = [0; 512];
+    fn read_data(socket: &mut Client) -> Result<Vec<Message>, Error> {
+        trace!("Reading data from socket {}", socket.addr);
+        const BUFFER_SIZE: usize = 512;
+        let mut buffer: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE];
         match socket.stream.read(&mut buffer) {
             Ok(n) => {
-                trace!("Got message of size {} from {}", n, socket.addr);
-                if n > 0 {
+                if n == BUFFER_SIZE {
+                    info!("Buffer has been filled!");
+                    socket.client_buffer.append(&mut buffer.to_vec());
+                    return ClientIo::read_data(socket);
+                } else if n > 0 {
+                    info!("Read {} bytes", n);
                     socket.client_buffer.append(&mut buffer[0..n].to_vec());
-                    while socket.client_buffer.len() > 2 {
-                        let cloned_buffer = socket.client_buffer.clone();
-                        let (size, buffer) = cloned_buffer.split_at(2);
-                        let data_size = u16::from_be_bytes([size[0], size[1]]);
-                        if buffer.len() >= data_size as usize {
-                            let (msg_bytes, remaining_bytes) = buffer.split_at(data_size as usize).clone();
-
-                            let msg = Message::new(String::from_utf8(msg_bytes.to_vec()).expect("Invalid utf-8 received"), socket.stream.local_addr().unwrap().to_string(), socket.addr.clone()).unwrap();
-                            warn!("Received {}", msg);
-                            match self.messages_in.send(msg.clone()) {
-                                Ok(_) => {}
-                                Err(E) => {
-                                    error!("Send message ({}) failed {}", msg, E);
-                                }
-                            }
-                            socket.client_buffer = remaining_bytes.to_vec();
-                        } else {
-                            break;
-                        }
-                    }
-                } else if n < 0 {
-                    error!("Buffer has been filled!!!!");
-                    //Buffer has been filled!
+                    return Ok(socket.get_messages_from_buffer());
                 } else {
-                    warn!("Didn't read data,closing!");
-                    self.clients.remove(&token);
-                    self.current_client_count -= 1;
+                    warn!("Didn't read data, closing!");
+                    return Ok(socket.get_messages_from_buffer());
                 }
             }
-            Err( ref err) if err.kind() != ErrorKind::WouldBlock => {
-                error!("Would block error: {}", err)
+            Err(ref err) if err.kind() != ErrorKind::WouldBlock => {
+                error!("Would block error: {}", err);
+                panic!("{}", err);
+                //Result::Err(Error::new(std::io::ErrorKind::WouldBlock,"No data has been read"));
             }
-            Err(E) => {
-                error!("Error ({}) encountered reading from {}", E, socket.addr);
+            Err(e) => {
+                error!("Error ({}) encountered reading from {}", e, socket.addr);
+                return Result::Err(e);
             }
         }
-        true
     }
 
 
@@ -203,17 +248,17 @@ impl ClientIo {
         let mut new_clients = true;
         while new_clients {
             match self.incoming_clients.try_recv() {
-                Ok(mut C) => {
-                    trace!("Added new client to writer {}", C.addr);
+                Ok(mut c) => {
+                    trace!("Added new client to writer {}", c.addr);
                     let token = Token(self.current_client_count);
                     self.current_client_count += 1;
-                    self.poll.registry().register(&mut C.stream, token, Interest::READABLE).unwrap();
-                    self.clients.insert(token, C);
+                    self.poll.registry().register(&mut c.stream, token, Interest::READABLE).unwrap();
+                    self.clients.insert(token, c);
                 }
-                Err(E) => if E == TryRecvError::Empty {
+                Err(e) => if e == TryRecvError::Empty {
                     new_clients = false;
                 } else {
-                    return Err(E);
+                    return Err(e);
                 },
             }
         }
@@ -250,13 +295,13 @@ impl Network {
     ///     messages_in: New messages to be sent to clients
     ///     messages_out: To send incoming messages to the user thread
     ///
-    pub fn init(address: String, client_addr: Sender<String>, messages_in: Sender<Message>, mut master_messages_out: Receiver<Message>) -> Network {
+    pub fn init(address: String, client_addr: Sender<String>, messages_in: Sender<Message>, master_messages_out: Receiver<Message>) -> Network {
         info!("Creating network handler");
         let (master_client_sender, master_client_receiver) = channel();
         thread::Builder::new().name(String::from("Listening Server")).spawn(move || {
             let mut worker = NetworkWorker::init(client_addr, messages_in);
             worker.start(address, master_client_receiver, master_messages_out);
-        });
+        }).expect("Failed to start network listener thread");
 
         //Start listening server
 
@@ -269,32 +314,32 @@ impl Network {
 impl NetworkWorker {
     fn init(master_client_address: Sender<String>, messages_in: Sender<Message>) -> NetworkWorker {
         //Start io thread
-        let (mut client_sender, mut client_receiver) = channel();
-        let (mut messages_out_sender, mut messages_out_receiver) = channel();
+        let (client_sender, client_receiver) = channel();
+        let (messages_out_sender, messages_out_receiver) = channel();
         let mut shutdown_senders = Vec::new();
         shutdown_senders.push(messages_out_sender.clone());
-        let slave_mesages_in = messages_in.clone();
+        let slave_messages_in = messages_in.clone();
         thread::Builder::new().name(String::from("Client IO")).spawn(move || {
             trace!("Created IO thread");
-            let mut client_io = ClientIo::new(client_receiver, slave_mesages_in, messages_out_receiver);
-            client_io.start();
-        });
+            let mut client_io = ClientIo::new(client_receiver, slave_messages_in, messages_out_receiver);
+            client_io.start().expect("Client IO failed");
+        }).expect("Failed to start initial client IO thread");
         NetworkWorker { current_connection_count: 0, thread_count: 0, client_map: HashMap::new(), full_client_sender: Vec::new(), slave_client_sender: client_sender, slave_messages_out_sender: messages_out_sender, master_messages_in: messages_in, master_client_address, client_io_shutdown_senders: shutdown_senders }
     }
 
-    fn start(&mut self, address: String, mut clients_in: Receiver<Client>, mut messages_out: Receiver<Message>) {
+    fn start(&mut self, address: String, clients_in: Receiver<Client>, messages_out: Receiver<Message>) {
         info!("Starting listening server on {}", address);
         let mut poll = Poll::new().unwrap();
         let mut events = Events::with_capacity(128);
         let mut tcp_listener = mio::net::TcpListener::bind(address.parse().unwrap()).unwrap();
-        poll.registry().register(&mut tcp_listener, Token(1), Interest::READABLE);
+        poll.registry().register(&mut tcp_listener, Token(1), Interest::READABLE).expect("Failed to network listener event");
 
         loop {
-            poll.poll(&mut events, Some(Duration::from_millis(100)));
+            poll.poll(&mut events, Some(Duration::from_millis(100))).expect("Network listener polling failed");
             for event in events.iter() {
                 match event.token() {
                     Token(1) => {
-                        let (mut stream, addr) = tcp_listener.accept().unwrap();
+                        let (stream, addr) = tcp_listener.accept().unwrap();
                         info!("New client connection from: {}", addr);
                         self.add_client(Client::new(addr.to_string(), stream));
                     }
@@ -310,12 +355,12 @@ impl NetworkWorker {
             for msg in messages_out.try_iter() {
                 if msg.options == MessageOptions::Shutdown {
                     for shutdown in &mut self.client_io_shutdown_senders {
-                        shutdown.send(Message::shutdown());
+                        shutdown.send(Message::shutdown()).expect("Failed to send shutdown message");
                     }
-                    error!("Need to shutdown safely!!!");
+                    info!("Closed listening thread");
                     return;
                 } else {
-                    self.client_map.get_mut(msg.recipient.as_str()).unwrap().send(msg);
+                    self.client_map.get_mut(msg.recipient.as_str()).unwrap().send(msg).expect("Failed to send message");
                 }
             }
         }
@@ -338,13 +383,13 @@ impl NetworkWorker {
             thread::Builder::new().name(thread_name).spawn(|| {
                 trace!("Created IO thread");
                 let mut client_io = ClientIo::new(client_receiver, slave_messages_in, messages_out_receiver);
-                client_io.start();
-            });
+                client_io.start().expect("Client IO thread failed");
+            }).expect("Failed to start new IO thread");
             self.thread_count += 1;
         }
         self.current_connection_count += 1;
         self.client_map.insert(new_client.addr.to_string(), self.slave_messages_out_sender.clone());
-        self.master_client_address.send(new_client.addr.to_string());
-        self.slave_client_sender.send(new_client);
+        self.master_client_address.send(new_client.addr.to_string()).expect("Failed to send client address to user thread");
+        self.slave_client_sender.send(new_client).expect("Failed to send client to IO thread");
     }
 }
