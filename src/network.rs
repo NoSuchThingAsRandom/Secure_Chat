@@ -1,70 +1,62 @@
-use std::{fmt, thread};
 use std::collections::HashMap;
-use std::fmt::Formatter;
-use std::io::{ErrorKind, Read, Write};
-use std::net::Shutdown;
 use std::sync::mpsc::*;
+use std::thread;
 use std::time::Duration;
 
-use futures::io::Error;
 use log::{error, info, trace, warn};
 use mio::{Interest, Poll, Token};
 use mio::Events;
 
+use crate::{Message, MessageOptions};
+use crate::crypto::{TlsConnection, TlsServer};
+
 //pub(crate) const ADDR: &str = "127.0.0.1:5962";
 const MAX_CLIENTS_THREAD: u8 = 20;
 //const SERVER: Token = Token(11);
-const MAX_MESSAGE_BYTES: u16 = 65535;
+pub(crate) const MAX_MESSAGE_BYTES: u16 = 65535;
+const BUFFER_SIZE: usize = 512;
 
-#[derive(Clone, PartialEq)]
-pub enum MessageOptions {
-    Shutdown,
-    None,
-}
-
-#[derive(Clone)]
-pub struct Message {
-    pub(crate) data: String,
-    pub sender: String,
-    pub recipient: String,
-    pub options: MessageOptions,
-}
-
-impl Message {
-    pub fn new(data: String, recipient: String, sender: String) -> Result<Message, Error> {
-        if data.as_bytes().len() > MAX_MESSAGE_BYTES as usize {
-            unimplemented!("Message data is too big!\nMessage bytes {}", data.as_bytes().len())
-        }
-        let message = Message { data, sender, recipient, options: MessageOptions::None };
-        Ok(message)
-    }
-    pub fn shutdown() -> Message {
-        Message {
-            data: "".to_string(),
-            sender: "".to_string(),
-            recipient: "".to_string(),
-            options: MessageOptions::Shutdown,
-        }
-    }
-}
-
-impl fmt::Display for Message {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "Message from: {}    To: {}    Contents: {}", self.sender, self.recipient, self.data)
-    }
-}
-
+/// Struct representing a singular client
 pub struct Client {
     pub addr: String,
-    pub stream: mio::net::TcpStream,
     client_buffer: Vec<u8>,
+    tls: TlsConnection,
 }
 
 impl Client {
-    pub fn new(addr: String, stream: mio::net::TcpStream) -> Client {
-        Client { addr, stream, client_buffer: Vec::new() }
+    pub fn new(addr: String, tls: TlsConnection) -> Client {
+        Client { addr, client_buffer: Vec::new(), tls }
     }
+    ///Reads group of messages from a client
+    fn read_data(&mut self) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
+        trace!("Reading data from socket {}", self.addr);
+        let mut buffer: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE];
+        return match self.tls.read_plaintext(&mut buffer) {
+            Ok(n) => {
+                if n == BUFFER_SIZE {
+                    info!("Buffer has been filled!");
+                    self.client_buffer.append(&mut buffer.to_vec());
+                    self.read_data()
+                } else if n > 0 {
+                    info!("Read {} bytes", n);
+                    self.client_buffer.append(&mut buffer[0..n].to_vec());
+                    Ok(self.get_messages_from_buffer())
+                } else {
+                    warn!("Didn't read data, closing!");
+                    Ok(self.get_messages_from_buffer())
+                }
+            }
+            Err(e) => {
+                error!("Error ({}) encountered reading from {}", e, self.addr);
+                Err(e)
+            }
+        }
+    }
+
+
+    ///Attempts to export messages from internal buffer
     pub fn get_messages_from_buffer(&mut self) -> Vec<Message> {
+        trace!("Getting messages from buffer");
         let mut messages = Vec::new();
         while self.client_buffer.len() > 2 {
             let cloned_buffer = self.client_buffer.clone();
@@ -74,7 +66,7 @@ impl Client {
             if buffer.len() >= data_size as usize {
                 let (msg_bytes, remaining_bytes) = buffer.split_at(data_size as usize).clone();
 
-                let msg = Message::new(String::from_utf8(msg_bytes.to_vec()).expect("Invalid utf-8 received"), self.stream.local_addr().unwrap().to_string(), self.addr.clone()).unwrap();
+                let msg = Message::new(String::from_utf8(msg_bytes.to_vec()).expect("Invalid utf-8 received"), self.addr.to_string(), self.addr.clone()).unwrap();
                 trace!("Received {}", msg);
                 messages.push(msg);
                 self.client_buffer = remaining_bytes.to_vec();
@@ -82,14 +74,12 @@ impl Client {
                 break;
             }
         }
+        trace!("Finished retrieiving messages from buffewr");
         return messages;
-    }
-    pub fn close(&mut self) -> Result<(), std::io::Error> {
-        self.stream.shutdown(Shutdown::Both)
     }
 }
 
-
+/// Struct representing a mio thread poll for multiple clients
 struct ClientIo {
     clients: HashMap<Token, Client>,
     current_client_count: usize,
@@ -104,15 +94,7 @@ impl ClientIo {
         ClientIo { clients: HashMap::new(), current_client_count: 0, poll: Poll::new().unwrap(), incoming_clients, messages_in, messages_out }
     }
 
-    fn send_message(client: &mut Client, msg: &Message) -> Result<(), std::io::Error> {
-        trace!("Sending message {}", msg);
-        let data = msg.data.as_bytes();
-        let size = data.len() as u16;
-        let size_bytes = size.to_be_bytes();
-        client.stream.write(&size_bytes)?;
-        client.stream.write(data)?;
-        client.stream.flush()
-    }
+    ///Mio poll for sending messages, receiving messages and adding clients
     pub fn start(&mut self) -> Result<(), TryRecvError> {
         let mut events = Events::with_capacity(128);
         info!("Starting IO writer loop");
@@ -132,10 +114,10 @@ impl ClientIo {
                         false
                     } else {
                         if client.addr == msg.recipient {
-                            match ClientIo::send_message(client, msg) {
+                            match client.tls.write_message(msg) {
                                 Ok(_) => { false }
                                 Err(e) => {
-                                    error!("Failed to send messge ({}), ({})", msg, e);
+                                    error!("Failed to send message ({}), ({})", msg, e);
                                     true
                                 }
                             }
@@ -151,12 +133,11 @@ impl ClientIo {
             //Check for incoming messages
             self.poll.poll(&mut events, Some(Duration::from_millis(100))).expect("Failed to poll for new events");
             for event in events.iter() {
-
-                //info!("Received event for {}", socket.addr);
+                info!("Received event for {:?}", event);
 
                 if event.is_readable() {
-                    let mut socket = self.clients.get_mut(&event.token()).unwrap();
-                    match ClientIo::read_data(&mut socket) {
+                    let socket = self.clients.get_mut(&event.token()).unwrap();
+                    match socket.read_data() {
                         Ok(messages) => {
                             for msg in messages {
                                 match self.messages_in.send(msg) {
@@ -186,7 +167,7 @@ impl ClientIo {
                 info!("Client buffer for {} is not empty!!!", client.addr);
                 trace!("Dumping buffer\n{:?}", client.client_buffer);
 
-                let messages = ClientIo::read_data(client);
+                let messages = client.read_data();
                 if messages.is_ok() {
                     for msg in messages.unwrap() {
                         println!("Got {}", msg);
@@ -201,7 +182,7 @@ impl ClientIo {
                     error!("Failed getting data from buffer {}", messages.err().unwrap());
                 }
             }
-            match client.close() {
+            match client.tls.shutdown() {
                 Ok(_) => {}
                 Err(e) => {
                     error!("Failed to close {}, as ({})", client.addr, e);
@@ -212,38 +193,7 @@ impl ClientIo {
         Ok(())
     }
 
-    fn read_data(socket: &mut Client) -> Result<Vec<Message>, Error> {
-        trace!("Reading data from socket {}", socket.addr);
-        const BUFFER_SIZE: usize = 512;
-        let mut buffer: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE];
-        match socket.stream.read(&mut buffer) {
-            Ok(n) => {
-                if n == BUFFER_SIZE {
-                    info!("Buffer has been filled!");
-                    socket.client_buffer.append(&mut buffer.to_vec());
-                    return ClientIo::read_data(socket);
-                } else if n > 0 {
-                    info!("Read {} bytes", n);
-                    socket.client_buffer.append(&mut buffer[0..n].to_vec());
-                    return Ok(socket.get_messages_from_buffer());
-                } else {
-                    warn!("Didn't read data, closing!");
-                    return Ok(socket.get_messages_from_buffer());
-                }
-            }
-            Err(ref err) if err.kind() != ErrorKind::WouldBlock => {
-                error!("Would block error: {}", err);
-                panic!("{}", err);
-                //Result::Err(Error::new(std::io::ErrorKind::WouldBlock,"No data has been read"));
-            }
-            Err(e) => {
-                error!("Error ({}) encountered reading from {}", e, socket.addr);
-                return Result::Err(e);
-            }
-        }
-    }
-
-
+    /// Function for adding new clients to mio poll
     fn check_clients(&mut self) -> Result<(), TryRecvError> {
         let mut new_clients = true;
         while new_clients {
@@ -252,7 +202,7 @@ impl ClientIo {
                     trace!("Added new client to writer {}", c.addr);
                     let token = Token(self.current_client_count);
                     self.current_client_count += 1;
-                    self.poll.registry().register(&mut c.stream, token, Interest::READABLE).unwrap();
+                    self.poll.registry().register(&mut c.tls.socket, token, Interest::READABLE).unwrap();
                     self.clients.insert(token, c);
                 }
                 Err(e) => if e == TryRecvError::Empty {
@@ -264,15 +214,12 @@ impl ClientIo {
         }
         Ok(())
     }
-}
 
-
-pub struct Network {
-    pub client_sender: Sender<Client>,
-    pub connections: Vec<Client>,
 
 }
 
+/// Struct representing a mio poll for incoming connections
+///AND for distributing messages to the correct ClientIO thread
 struct NetworkWorker {
     current_connection_count: u32,
     thread_count: u32,
@@ -283,6 +230,103 @@ struct NetworkWorker {
     slave_messages_out_sender: Sender<Message>,
     master_messages_in: Sender<Message>,
     master_client_address: Sender<String>,
+
+}
+
+impl NetworkWorker {
+    fn init(master_client_address: Sender<String>, messages_in: Sender<Message>) -> NetworkWorker {
+        master_client_address.send(String::from("HEy")).unwrap();
+        //Start io thread
+        let (client_sender, client_receiver) = channel();
+        let (messages_out_sender, messages_out_receiver) = channel();
+        let mut shutdown_senders = Vec::new();
+        shutdown_senders.push(messages_out_sender.clone());
+        let slave_messages_in = messages_in.clone();
+        thread::Builder::new().name(String::from("Client IO")).spawn(move || {
+            trace!("Created IO thread");
+            let mut client_io = ClientIo::new(client_receiver, slave_messages_in, messages_out_receiver);
+            client_io.start().expect("Client IO failed");
+        }).expect("Failed to start initial client IO thread");
+        NetworkWorker { current_connection_count: 0, thread_count: 0, client_map: HashMap::new(), full_client_sender: Vec::new(), slave_client_sender: client_sender, slave_messages_out_sender: messages_out_sender, master_messages_in: messages_in, master_client_address, client_io_shutdown_senders: shutdown_senders }
+    }
+
+    ///Mio poll for incoming connections and distributing outgoing messages to correct client_io thread
+    fn start(&mut self, address: String, clients_in: Receiver<Client>, messages_out: Receiver<Message>) {
+        info!("Starting listening server on {}", address);
+        let mut poll = Poll::new().unwrap();
+        let mut events = Events::with_capacity(128);
+        let mut tcp_listener = mio::net::TcpListener::bind(address.parse().unwrap()).unwrap();
+        poll.registry().register(&mut tcp_listener, Token(1), Interest::READABLE).expect("Failed to network listener event");
+        let mut tls_server = TlsServer::new(tcp_listener);
+
+        loop {
+            poll.poll(&mut events, Some(Duration::from_millis(100))).expect("Network listener polling failed");
+            for event in events.iter() {
+                match event.token() {
+                    Token(1) => {
+                        let client = tls_server.accept_connection();
+                        self.add_client(client);
+                    }
+                    Token(_) => {
+                        error!("Unknown event requested");
+                        unimplemented!("Unknown event requested!");
+                    }
+                }
+            }
+            for client in clients_in.try_iter() {
+                self.add_client(client);
+            }
+            for msg in messages_out.try_iter() {
+                if msg.options == MessageOptions::Shutdown {
+                    for shutdown in &mut self.client_io_shutdown_senders {
+                        shutdown.send(Message::shutdown()).expect("Failed to send shutdown message");
+                    }
+                    info!("Closed listening thread");
+                    return;
+                } else {
+                    self.client_map.get_mut(msg.recipient.as_str()).unwrap().send(msg).expect("Failed to send message");
+                }
+            }
+        }
+    }
+
+    /// Sends a new incoming client to a client_io thread
+    /// Creates a new client_io thread, if all client_io instances are at max capacity
+    fn add_client(&mut self, new_client: Client) {
+        if self.current_connection_count >= MAX_CLIENTS_THREAD as u32 {
+            //Update handlers
+            let (new_client_sender, client_receiver) = channel();
+            self.full_client_sender.push(self.slave_client_sender.clone());
+            self.slave_client_sender = new_client_sender;
+
+            let (new_messages_out_sender, messages_out_receiver) = channel();
+            self.client_io_shutdown_senders.push(new_messages_out_sender.clone());
+            self.slave_messages_out_sender = new_messages_out_sender;
+            let mut thread_name = String::from("Client IO - ");
+            let slave_messages_in = self.master_messages_in.clone();
+            thread_name.push_str(self.thread_count.to_string().as_str());
+            thread::Builder::new().name(thread_name).spawn(|| {
+                trace!("Created IO thread");
+                let mut client_io = ClientIo::new(client_receiver, slave_messages_in, messages_out_receiver);
+                client_io.start().expect("Client IO thread failed");
+            }).expect("Failed to start new IO thread");
+            self.thread_count += 1;
+        }
+        self.current_connection_count += 1;
+        self.client_map.insert(new_client.addr.to_string(), self.slave_messages_out_sender.clone());
+        info!("Sending {} to main thread", new_client.addr.to_string());
+        let res = self.master_client_address.send(new_client.addr.to_string());//.unwrap();//("Failed to send client address to user thread");
+        if res.is_err() {
+            error!("{}", res.err().unwrap());
+        }
+        self.slave_client_sender.send(new_client).expect("Failed to send client to IO thread");
+    }
+}
+
+/// Initiation struct for network worker and holding all publicly accessible variables
+pub struct Network {
+    pub client_sender: Sender<Client>,
+    pub connections: Vec<Client>,
 
 }
 
@@ -308,88 +352,5 @@ impl Network {
 
 //Return network instance (With client sender for initiated connections)
         Network { client_sender: master_client_sender, connections: Vec::new() }
-    }
-}
-
-impl NetworkWorker {
-    fn init(master_client_address: Sender<String>, messages_in: Sender<Message>) -> NetworkWorker {
-        //Start io thread
-        let (client_sender, client_receiver) = channel();
-        let (messages_out_sender, messages_out_receiver) = channel();
-        let mut shutdown_senders = Vec::new();
-        shutdown_senders.push(messages_out_sender.clone());
-        let slave_messages_in = messages_in.clone();
-        thread::Builder::new().name(String::from("Client IO")).spawn(move || {
-            trace!("Created IO thread");
-            let mut client_io = ClientIo::new(client_receiver, slave_messages_in, messages_out_receiver);
-            client_io.start().expect("Client IO failed");
-        }).expect("Failed to start initial client IO thread");
-        NetworkWorker { current_connection_count: 0, thread_count: 0, client_map: HashMap::new(), full_client_sender: Vec::new(), slave_client_sender: client_sender, slave_messages_out_sender: messages_out_sender, master_messages_in: messages_in, master_client_address, client_io_shutdown_senders: shutdown_senders }
-    }
-
-    fn start(&mut self, address: String, clients_in: Receiver<Client>, messages_out: Receiver<Message>) {
-        info!("Starting listening server on {}", address);
-        let mut poll = Poll::new().unwrap();
-        let mut events = Events::with_capacity(128);
-        let mut tcp_listener = mio::net::TcpListener::bind(address.parse().unwrap()).unwrap();
-        poll.registry().register(&mut tcp_listener, Token(1), Interest::READABLE).expect("Failed to network listener event");
-
-        loop {
-            poll.poll(&mut events, Some(Duration::from_millis(100))).expect("Network listener polling failed");
-            for event in events.iter() {
-                match event.token() {
-                    Token(1) => {
-                        let (stream, addr) = tcp_listener.accept().unwrap();
-                        info!("New client connection from: {}", addr);
-                        self.add_client(Client::new(addr.to_string(), stream));
-                    }
-                    Token(_) => {
-                        error!("Unknown event requested");
-                        unimplemented!("Unknown event requested!");
-                    }
-                }
-            }
-            for client in clients_in.try_iter() {
-                self.add_client(client);
-            }
-            for msg in messages_out.try_iter() {
-                if msg.options == MessageOptions::Shutdown {
-                    for shutdown in &mut self.client_io_shutdown_senders {
-                        shutdown.send(Message::shutdown()).expect("Failed to send shutdown message");
-                    }
-                    info!("Closed listening thread");
-                    return;
-                } else {
-                    self.client_map.get_mut(msg.recipient.as_str()).unwrap().send(msg).expect("Failed to send message");
-                }
-            }
-        }
-    }
-
-
-    fn add_client(&mut self, new_client: Client) {
-        if self.current_connection_count >= MAX_CLIENTS_THREAD as u32 {
-            //Update handlers
-            let (new_client_sender, client_receiver) = channel();
-            self.full_client_sender.push(self.slave_client_sender.clone());
-            self.slave_client_sender = new_client_sender;
-
-            let (new_messages_out_sender, messages_out_receiver) = channel();
-            self.client_io_shutdown_senders.push(new_messages_out_sender.clone());
-            self.slave_messages_out_sender = new_messages_out_sender;
-            let mut thread_name = String::from("Client IO - ");
-            let slave_messages_in = self.master_messages_in.clone();
-            thread_name.push_str(self.thread_count.to_string().as_str());
-            thread::Builder::new().name(thread_name).spawn(|| {
-                trace!("Created IO thread");
-                let mut client_io = ClientIo::new(client_receiver, slave_messages_in, messages_out_receiver);
-                client_io.start().expect("Client IO thread failed");
-            }).expect("Failed to start new IO thread");
-            self.thread_count += 1;
-        }
-        self.current_connection_count += 1;
-        self.client_map.insert(new_client.addr.to_string(), self.slave_messages_out_sender.clone());
-        self.master_client_address.send(new_client.addr.to_string()).expect("Failed to send client address to user thread");
-        self.slave_client_sender.send(new_client).expect("Failed to send client to IO thread");
     }
 }

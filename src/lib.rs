@@ -1,13 +1,16 @@
 extern crate strum;
 extern crate strum_macros;
 
+
 use std::{fmt, thread};
 use std::fmt::Formatter;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Duration;
 
-use log::{error, info, trace};
+use log::{error, info, trace, warn};
+use rustls::ClientConfig;
 use strum::EnumMessage;
 use strum::IntoEnumIterator;
 use strum_macros::AsRefStr;
@@ -16,9 +19,49 @@ use strum_macros::EnumMessage;
 use strum_macros::EnumString;
 use text_io::read;
 
-use crate::network::{Client, Message, Network};
+use crate::crypto::TlsConnection;
+use crate::network::{Client, MAX_MESSAGE_BYTES, Network};
 
 pub mod network;
+pub mod crypto;
+
+#[derive(Clone, PartialEq)]
+pub enum MessageOptions {
+    Shutdown,
+    None,
+}
+
+#[derive(Clone)]
+pub struct Message {
+    pub(crate) data: String,
+    pub sender: String,
+    pub recipient: String,
+    pub options: MessageOptions,
+}
+
+impl Message {
+    pub fn new(data: String, recipient: String, sender: String) -> Result<Message, std::io::Error> {
+        if data.as_bytes().len() > MAX_MESSAGE_BYTES as usize {
+            unimplemented!("Message data is too big!\nMessage bytes {}", data.as_bytes().len())
+        }
+        let message = Message { data, sender, recipient, options: MessageOptions::None };
+        Ok(message)
+    }
+    pub fn shutdown() -> Message {
+        Message {
+            data: "".to_string(),
+            sender: "".to_string(),
+            recipient: "".to_string(),
+            options: MessageOptions::Shutdown,
+        }
+    }
+}
+
+impl fmt::Display for Message {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "Message from: {}    To: {}    Contents: {}", self.sender, self.recipient, self.data)
+    }
+}
 
 
 #[derive(EnumIter, EnumString, EnumMessage, Debug, AsRefStr)]
@@ -81,6 +124,7 @@ pub struct InputLoop {
     messages_out_sender: Sender<Message>,
     clients: Vec<ClientUser>,
     network_struct: Network,
+    client_config: ClientConfig,
 }
 
 impl InputLoop {
@@ -96,6 +140,7 @@ impl InputLoop {
             messages_out_sender,
             clients: Vec::new(),
             network_struct,
+            client_config: ClientConfig::new(),
         }
     }
     ///The main user input loop
@@ -179,9 +224,9 @@ impl InputLoop {
                                 let time: Result<i64, <i64 as FromStr>::Err> = fuck[0..fuck.len()].parse();
                                 if time.is_ok() {
                                     let current = chrono::Utc::now().timestamp_millis();
-                                    let receievd = time.unwrap();
+                                    let received = time.unwrap();
                                     //println!("CUrrent {} Time Sent{}",current,receievd);
-                                    let different = current - receievd;
+                                    let different = current - received;
                                     differences.push(different);
                                 }
                             }
@@ -220,7 +265,11 @@ impl InputLoop {
                 let addr = stream.peer_addr().unwrap();
                 let local_addr = stream.local_addr().unwrap();
                 info!("Created new connection to {:?}", stream.peer_addr());
-                if self.network_struct.client_sender.send(Client::new(addr.to_string(), stream)).is_err() {
+                warn!("Need to provide proper dns hostname");
+                let dns_hostname = webpki::DNSNameRef::try_from_ascii_str("localhost").unwrap();
+                let session = rustls::ClientSession::new(&Arc::new(self.client_config.clone()), dns_hostname);
+                let conn = TlsConnection::new(stream, Box::from(session));
+                if self.network_struct.client_sender.send(Client::new(addr.to_string(), conn)).is_err() {
                     panic!("The IO thread has been closed!");
                 }
                 Some(ClientUser {
@@ -249,12 +298,12 @@ impl InputLoop {
                         } else {
                             true
                         }
-                    },
+                    }
                     Err(_) => {
                         println!("Message data is too big!");
                         false
                     }
-                }
+                };
             }
         }
         false
@@ -368,7 +417,7 @@ impl InputLoop {
         info!("Finished");
     }
 
-    /*pub fn test_single_server_multi_client(&mut self) {
+    pub fn test_single_server_multi_client(&mut self) {
         info!("Starting multi client multi server test");
         // Test consts
         const NUM_THREADS: u32 = 10;
@@ -397,6 +446,7 @@ impl InputLoop {
 
         //Start Server Thread
         thread::spawn(move || {
+            let mut differences = Vec::new();
             let mut host = String::from("127.0.0.1:");
             host.push_str((PORT).to_string().as_str());
             let mut state = InputLoop::new(host);
@@ -407,7 +457,7 @@ impl InputLoop {
             println!("Sent messages");
 
 
-            for timestamp in sub_state.check_messages_bench().iter() {
+            for timestamp in state.check_messages_bench().iter() {
                 differences.push(timestamp - 10000);
             }
             let mut total: i64 = 0;
@@ -422,11 +472,7 @@ impl InputLoop {
                 println!("Time fucked up? {}", total);
             }
             info!("     Sent messages");
-
-            let size = threads.len();
-            let mut total = 0;
-
-            println!("\n\nTotal Average {}", total / size as i64);
+            println!("\n\nTotal Average {}", total);
         });
 
         thread::sleep(Duration::from_secs(5));
@@ -434,15 +480,15 @@ impl InputLoop {
         //Start client threads
         let mut threads = Vec::new();
         for mut state in all_states {
-            let address_copy: Vec<String> = addresses.clone();
+            let _address_copy: Vec<String> = addresses.clone();
             threads.push(thread::spawn(move || {
                 let mut host = String::from("127.0.0.1:");
                 host.push_str((PORT).to_string().as_str());
                 //Connect to server
                 for sub_state in &mut state {
                     match sub_state.connect(host.clone()) {
-                        Some(C) => {
-                            sub_state.clients.push(C);
+                        Some(c) => {
+                            sub_state.clients.push(c);
                         }
                         None => {
                             println!("Failed to connect to client");
@@ -453,14 +499,14 @@ impl InputLoop {
                 thread::sleep(Duration::from_secs(5));
 
                 //Send messages
-                for msg_index in 0..NUM_MESSAGES {
+                for _msg_index in 0..NUM_MESSAGES {
                     for sub_state in &mut state {
                         let mut msg = chrono::Utc::now().timestamp_millis().to_string();
                         msg.push(' ');
                         sub_state.send_message(host.clone(), msg);
                     }
                 }
-                state.get_mut(0).
+                state.get_mut(0);
             }));
         }
 
@@ -472,19 +518,21 @@ impl InputLoop {
 
         self.update_clients();
         info!("Finished");
-    }*/
+    }
 
     pub fn fish(&mut self) {
-        thread::sleep(Duration::from_secs(1));
+        thread::sleep(Duration::from_secs(5));
 
         let client = self.connect(String::from("127.0.0.1:49999")).unwrap();
         self.clients.push(client);
+        thread::sleep(Duration::from_secs(5));
 
         for value in String::from("ABCDEF").split("") {
+            thread::sleep(Duration::from_secs(2));
             println!("{}", value);
             println!("{}", self.send_message(String::from("127.0.0.1:49999"), value.to_string()));
         }
-        let lorem=
+        let lorem =
             ["Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Tempus iaculis urna id volutpat lacus laoreet non. In egestas erat imperdiet sed euismod nisi porta lorem mollis. Praesent elementum facilisis leo vel. Arcu bibendum at varius vel pharetra vel turpis nunc. Aliquet nec ullamcorper sit amet risus nullam eget. Quam quisque id diam vel quam elementum pulvinar etiam. Ullamcorper sit amet risus nullam eget. Sodales neque sodales ut etiam sit. Nunc mi ipsum faucibus vitae aliquet. Nunc sed augue lacus viverra. Neque volutpat ac tincidunt vitae semper quis lectus. Tortor at auctor urna nunc id cursus metus aliquam eleifend. Ligula ullamcorper malesuada proin libero nunc consequat interdum. Et netus et malesuada fames ac turpis egestas integer eget. Nulla aliquet enim tortor at auctor urna nunc id cursus.
 
 Diam ut venenatis tellus in metus vulputate eu scelerisque felis. Sodales ut eu sem integer vitae justo eget. Arcu non sodales neque sodales ut etiam sit amet. Neque gravida in fermentum et. Metus aliquam eleifend mi in nulla posuere sollicitudin. Sed viverra ipsum nunc aliquet bibendum enim facilisis. Ultrices vitae auctor eu augue ut lectus arcu bibendum. Vestibulum morbi blandit cursus risus. Diam phasellus vestibulum lorem sed risus ultricies tristique nulla. Nullam eget felis eget nunc lobortis. Consequat ac felis donec et odio pellentesque diam volutpat commodo. At consectetur lorem donec massa. Rhoncus urna neque viverra justo. Quis viverra nibh cras pulvinar mattis nunc sed. Urna id volutpat lacus laoreet non curabitur.
@@ -504,14 +552,14 @@ Semper quis lectus nulla at volutpat. Nibh cras pulvinar mattis nunc sed. Amet v
 Arcu non odio euismod lacinia at quis risus sed. Blandit cursus risus at ultrices. Facilisis volutpat est velit egestas dui. Varius sit amet mattis vulputate enim nulla. Nibh cras pulvinar mattis nunc sed blandit libero. Faucibus a pellentesque sit amet porttitor eget dolor morbi non. Id volutpat lacus laoreet non curabitur. Morbi blandit cursus risus at ultrices mi tempus. Praesent elementum facilisis leo vel fringilla est ullamcorper eget nulla. Sed odio morbi quis commodo odio.
 
 Vitae tempus quam pellentesque nec nam aliquam. At augue eget arcu dictum varius duis at. Velit ut tortor pretium viverra suspendisse potenti. In dictum non consectetur a erat nam. Nisi lacus sed viverra tellus in hac habitasse. Sit amet nisl purus in. Congue nisi vitae suscipit tellus. Condimentum id venenatis a condimentum vitae sapien. Auctor urna nunc id cursus metus aliquam eleifend. Purus semper eget duis at tellus at urna. Eu consequat ac felis donec et odio pellentesque. Amet venenatis urna cursus eget. Sit amet dictum sit amet justo donec."
-        ;8].to_vec();
-        let mut value =String::new();
-        for imspum in lorem{
+                ; 8].to_vec();
+        let mut value = String::new();
+        for imspum in lorem {
             value.push_str(imspum);
         }
         println!("{}", self.send_message(String::from("127.0.0.1:49999"), value.to_string()));
 
-        thread::sleep(Duration::from_secs(5));
+        thread::sleep(Duration::from_secs(15));
         thread::sleep(Duration::from_secs(1));
         self.shutdown();
         println!("Finished test");
