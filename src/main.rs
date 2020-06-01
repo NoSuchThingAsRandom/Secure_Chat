@@ -44,7 +44,11 @@ pub fn main() {
     println!("{:?}", (end - start));
     println!("{:?}", chrono::Utc::now().timestamp());
     info!("Initiating Setup!");
-    InputLoop::new(String::from("127.0.0.1:49999"));
+    thread::spawn(|| {
+        let mut input = InputLoop::new(String::from("127.0.0.1:49999"));
+        input.start();
+        loop {}
+    });
     start_tests();
     loop {}
 }

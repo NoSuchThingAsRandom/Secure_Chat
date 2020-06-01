@@ -74,7 +74,7 @@ impl Client {
                 break;
             }
         }
-        trace!("Finished retrieiving messages from buffewr");
+        trace!("Finished retrieving messages from buffer");
         return messages;
     }
 }
@@ -104,7 +104,9 @@ impl ClientIo {
             if self.check_clients().is_err() {
                 shutdown = true;
             }
-
+            for client in self.clients.values_mut() {
+                client.tls.check_write();
+            }
             //Send messages
             let mut messages: Vec<Message> = self.messages_out.try_iter().collect();
             for client in self.clients.values_mut() {

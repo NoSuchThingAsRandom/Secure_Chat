@@ -4,7 +4,7 @@ use std::net::Shutdown;
 use std::sync::Arc;
 
 use log::{error, info, trace, warn};
-use rustls::{NoClientAuth, ServerConfig};
+use rustls::{Certificate, NoClientAuth, RootCertStore, ServerConfig, TLSError};
 
 use crate::Message;
 use crate::network::Client;
@@ -20,7 +20,7 @@ impl TlsServer {
         //TODO Need to provide client cert authentication
         warn!("Need to do client verification");
         let mut config = ServerConfig::new(client_verifier);
-        config.set_single_cert(load_certs("certs/end.fullchain"), load_private_key("certs/end.rsa")).unwrap();
+        config.set_single_cert(load_certs("certs_2/cert/my_cert.crt"), load_private_key("certs_2/cert/priv.key")).unwrap();
         TlsServer {
             listener: socket,
             config: Arc::new(config),
@@ -60,7 +60,7 @@ impl TlsConnection {
                 } else {
                     let processed = self.tls_session.process_new_packets();
                     match processed {
-                        Ok(_) => {},
+                        Ok(_) => {}
                         Err(e) => {
                             error!("Failed to process TLS packets ({})", e);
                             //TODO Send any unsent messages?
@@ -79,6 +79,13 @@ impl TlsConnection {
     pub fn read_plaintext(&mut self, buffer: &mut [u8]) -> Result<usize, Box<dyn std::error::Error>> {
         self.read_tls()?;
         Ok(self.tls_session.read(buffer)?)
+    }
+    pub fn check_write(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let req = self.tls_session.wants_write();
+        if req {
+            let n = self.tls_session.write_tls(&mut self.socket)?;
+        }
+        Ok(())
     }
     pub fn write_message(&mut self, msg: &Message) -> Result<(), Box<dyn std::error::Error>> {
         let data = msg.data.as_bytes();

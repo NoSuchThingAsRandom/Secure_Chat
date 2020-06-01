@@ -2,8 +2,10 @@ extern crate strum;
 extern crate strum_macros;
 
 
-use std::{fmt, thread};
+use std::{fmt, io, thread};
 use std::fmt::Formatter;
+use std::io::Cursor;
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -133,6 +135,17 @@ impl InputLoop {
         let (messages_in_sender, messages_in_receiver) = channel();
         let (messages_out_sender, messages_out_receiver) = channel();
         let network_struct = network::Network::init(address, user_client_sender, messages_in_sender, messages_out_receiver);
+        let mut config = ClientConfig::new();
+        let cafile = Path::new("certs_2/CA/myCA.pem");
+        let file = std::fs::read(cafile)
+            .expect("Failed to read file.");
+
+        let mut pem = Cursor::new(file);
+        config
+            .root_store
+            .add_pem_file(&mut pem)
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid cert"))
+            .expect("Unable to create configuration object.");
 
         InputLoop {
             user_client_receiver,
@@ -140,7 +153,7 @@ impl InputLoop {
             messages_out_sender,
             clients: Vec::new(),
             network_struct,
-            client_config: ClientConfig::new(),
+            client_config: config,
         }
     }
     ///The main user input loop
@@ -557,7 +570,7 @@ Vitae tempus quam pellentesque nec nam aliquam. At augue eget arcu dictum varius
         for imspum in lorem {
             value.push_str(imspum);
         }
-        println!("{}", self.send_message(String::from("127.0.0.1:49999"), value.to_string()));
+        //println!("{}", self.send_message(String::from("127.0.0.1:49999"), value.to_string()));
 
         thread::sleep(Duration::from_secs(15));
         thread::sleep(Duration::from_secs(1));
